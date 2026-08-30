@@ -64,6 +64,9 @@ const elements = {
   characterCount: document.querySelector("#character-count"),
   useExample: document.querySelector("#use-example"),
   examplePreset: document.querySelector("#example-preset"),
+  customProcessFields: document.querySelector("#custom-process-fields"),
+  customProcessName: document.querySelector("#custom-process-name"),
+  customProcessUnit: document.querySelector("#custom-process-unit"),
   reset: document.querySelector("#reset-workspace"),
   buildModel: document.querySelector("#build-model"),
   modeButtons: [...document.querySelectorAll("[data-mode]")],
@@ -1613,6 +1616,12 @@ function updateCharacterCount() {
   elements.characterCount.textContent = `${elements.description.value.length} / 3000`;
 }
 
+function renderExampleChoice() {
+  const custom = elements.examplePreset.value === "custom";
+  elements.customProcessFields.hidden = !custom;
+  elements.useExample.textContent = custom ? "Create starter brief" : "Use example";
+}
+
 elements.operationForm.addEventListener("submit", (event) => {
   event.preventDefault();
   if (state.busy || state.baselinePhase === "loading" || state.comparisonPhase === "loading") return;
@@ -1638,10 +1647,28 @@ elements.description.addEventListener("input", () => {
 });
 
 elements.useExample.addEventListener("click", () => {
-  elements.description.value = EXAMPLE_DESCRIPTIONS[elements.examplePreset.value] ?? EXAMPLE_DESCRIPTIONS.co2;
+  if (elements.examplePreset.value === "custom") {
+    const name = elements.customProcessName.value.trim();
+    if (!name) {
+      elements.customProcessName.setCustomValidity("Enter a process or material name.");
+      elements.customProcessName.reportValidity();
+      elements.customProcessName.focus();
+      return;
+    }
+    elements.customProcessName.setCustomValidity("");
+    const unit = humanise(elements.customProcessUnit.value).toLowerCase();
+    elements.description.value = `Our operation handles ${name}, measured in ${unit}. Material enters continuously into finite buffer storage and leaves through scheduled outbound removals. Our objective is to minimise lost output when outbound removals are missed or delayed.`;
+  } else {
+    elements.description.value = EXAMPLE_DESCRIPTIONS[elements.examplePreset.value] ?? EXAMPLE_DESCRIPTIONS.co2;
+  }
   elements.descriptionError.textContent = "";
   updateCharacterCount();
   elements.description.focus();
+});
+
+elements.examplePreset.addEventListener("change", renderExampleChoice);
+elements.customProcessName.addEventListener("input", () => {
+  elements.customProcessName.setCustomValidity("");
 });
 
 elements.reset.addEventListener("click", () => resetWorkspace());
@@ -1794,4 +1821,5 @@ elements.retryComparison.addEventListener("click", () => {
 });
 
 updateCharacterCount();
+renderExampleChoice();
 render();

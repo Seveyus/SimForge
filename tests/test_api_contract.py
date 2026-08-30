@@ -346,7 +346,12 @@ def test_model_spec_rejects_mixed_quantity_units():
 
 @pytest.mark.parametrize(
     ("unit", "material"),
-    [("tonnes", "carbon dioxide"), ("cubic_metres", "process water"), ("tonnes", "grain")],
+    [
+        ("tonnes", "carbon dioxide"),
+        ("cubic_metres", "process water"),
+        ("tonnes", "grain"),
+        ("litres", "chemical slurry"),
+    ],
 )
 def test_requirements_agent_extracts_supported_presets(unit, material):
     extraction = {

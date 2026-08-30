@@ -21,7 +21,8 @@ The finished work should let a user:
 The buffer-logistics implementation is complete and live-verified with Gemini,
 Daytona, and the browser. It supports CO₂, process water, and grain presets;
 operational ranking is used unless costs are explicitly supplied. The complete
-259-test suite passes.
+260-test suite passes. The preset selector also provides a custom process option
+with an explicit material name and supported quantity unit.
 
 ## Ownership Boundary
 

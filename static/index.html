@@ -8,7 +8,7 @@
       content="Turn an operational description into a transparent, executable model."
     >
     <title>SimForge — AI Modelling Workspace</title>
-    <link rel="stylesheet" href="./styles.css?v=9">
+    <link rel="stylesheet" href="./styles.css?v=10">
   </head>
   <body>
     <a class="skip-link" href="#workspace">Skip to workspace</a>
@@ -104,13 +104,31 @@
                     <option value="co2">CO₂</option>
                     <option value="water">Process water</option>
                     <option value="grain">Grain</option>
+                    <option value="custom">Custom process…</option>
                   </select>
                   <button class="text-button" id="use-example" type="button">Use example</button>
                 </span>
                 <span id="character-count">0 / 3000</span>
               </div>
+              <div class="custom-process-fields" id="custom-process-fields" hidden>
+                <label>
+                  Process or material
+                  <input id="custom-process-name" type="text" maxlength="100" placeholder="e.g. chemical slurry">
+                </label>
+                <label>
+                  Quantity unit
+                  <select id="custom-process-unit">
+                    <option value="tonnes">Tonnes</option>
+                    <option value="kilograms">Kilograms</option>
+                    <option value="litres">Litres</option>
+                    <option value="cubic_metres">Cubic metres</option>
+                    <option value="items">Items</option>
+                  </select>
+                </label>
+              </div>
               <p class="field-help" id="description-help">
-                Include rates, capacities, schedules and the decision you want to test.
+                Choose a preset or describe any process with continuous inflow,
+                finite buffer capacity and scheduled outbound removal.
               </p>
               <p class="field-error" id="description-error" role="alert"></p>
 
@@ -471,6 +489,6 @@
     </div>
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <script type="module" src="./app.js?v=10"></script>
+    <script type="module" src="./app.js?v=11"></script>
   </body>
 </html>

@@ -127,7 +127,7 @@ bad. `?execution=daytona` forces it. Default picks by whether the key is set.
 
 ## Verified
 
-- **259 tests**, ~8 s: `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q`
+- **260 tests**, ~8 s: `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q`
 - Sandbox results are **bit-identical** to local, including every timeseries row
 - Mass balance holds to ~1e-13 on every run; asserted on results returning from
   Daytona too
