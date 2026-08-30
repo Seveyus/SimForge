@@ -1,0 +1,79 @@
+{
+  "model_spec": {
+    "objective": "minimise lost production",
+    "process_family": "production_storage_collection",
+    "time": {
+      "simulation_days": 30,
+      "timestep_minutes": 10
+    },
+    "parameters": {
+      "production_rate": {
+        "value": 1.0,
+        "unit": "tonnes/hour",
+        "source": "user",
+        "rationale": null,
+        "citation": null
+      },
+      "tank_count": {
+        "value": 2,
+        "unit": null,
+        "source": "user",
+        "rationale": null,
+        "citation": null
+      },
+      "tank_capacity": {
+        "value": 45,
+        "unit": "tonnes",
+        "source": "user",
+        "rationale": null,
+        "citation": null
+      },
+      "collections_per_day": {
+        "value": 1,
+        "unit": "collections/day",
+        "source": "user",
+        "rationale": null,
+        "citation": null
+      },
+      "tanker_capacity": {
+        "value": 30,
+        "unit": "tonnes",
+        "source": "user",
+        "rationale": null,
+        "citation": null
+      },
+      "missed_collection_probability": {
+        "value": 0.08,
+        "unit": "fraction",
+        "source": "assumption",
+        "rationale": "Initial demo assumption for stochastic stress testing; review before execution.",
+        "citation": null
+      }
+    }
+  },
+  "scenarios": [
+    {
+      "id": "add-third-tank",
+      "label": "Add a third storage tank",
+      "parameter_overrides": {
+        "tank_count": 3
+      }
+    },
+    {
+      "id": "increase-collections",
+      "label": "Increase collections to twice daily",
+      "parameter_overrides": {
+        "collections_per_day": 2
+      }
+    },
+    {
+      "id": "larger-tanker",
+      "label": "Use a larger tanker",
+      "parameter_overrides": {
+        "tanker_capacity": 40
+      }
+    }
+  ],
+  "seed": 42,
+  "rollout_count": 100
+}
