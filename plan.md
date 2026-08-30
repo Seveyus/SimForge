@@ -409,19 +409,31 @@ Exit gate:
 
 ### M6 — Scenario comparison and recommendation UX
 
+Status: implemented in the existing static frontend against the M0 scenario
+fixtures. Live mode targets the proposed `/api/scenarios/compare` route with no
+fixture fallback.
+
+Artifacts:
+
+- `static/index.html`
+- `static/styles.css`
+- `static/app.js`
+
 Deliverables:
 
-- Baseline-versus-scenarios metric comparison.
-- Expected and downside outcomes, including P95/failure probability when
+- [x] Baseline-versus-scenarios metric comparison.
+- [x] Expected and downside outcomes, including P95/failure probability when
   supplied.
-- Financial values and payback when supplied by the backend.
-- Recommendation panel with provenance-aware assumptions visible nearby.
-- Clear distinction between simulation output and AI explanation.
+- [x] Financial values and payback when supplied by the backend.
+- [x] Recommendation panel with provenance-aware assumptions visible nearby.
+- [x] Clear distinction between simulation evidence and backend-supplied,
+  optionally AI-assisted explanation.
 
 Exit gate:
 
-- The UI can render the full scenario comparison contract, including partial or
-  failed scenarios, without calculating a recommendation itself.
+- [x] The UI renders completed and failed scenarios from the full comparison
+  contract and displays recommendation deltas/financials verbatim without
+  calculating a recommendation itself.
 
 ### M7 — Integration and demo hardening
 

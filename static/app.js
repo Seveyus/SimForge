@@ -1,12 +1,31 @@
 const ROUTES = Object.freeze({
   requirements: "/api/requirements",
   baseline: "/api/simulations/baseline",
+  scenarios: "/api/scenarios/compare",
 });
 
 const BASELINE_OPTIONS = Object.freeze({
   seed: 42,
   rollout_count: 100,
 });
+
+const SCENARIO_DEFINITIONS = Object.freeze([
+  Object.freeze({
+    id: "add-third-tank",
+    label: "Add a third storage tank",
+    parameter_overrides: Object.freeze({ tank_count: 3 }),
+  }),
+  Object.freeze({
+    id: "increase-collections",
+    label: "Increase collections to twice daily",
+    parameter_overrides: Object.freeze({ collections_per_day: 2 }),
+  }),
+  Object.freeze({
+    id: "larger-tanker",
+    label: "Use a larger tanker",
+    parameter_overrides: Object.freeze({ tanker_capacity: 40 }),
+  }),
+]);
 
 const EXAMPLE_DESCRIPTION =
   "We produce around one tonne of CO₂ per hour. We have two 45-tonne storage " +
@@ -43,6 +62,10 @@ const state = {
   baselineResult: null,
   baselineError: null,
   lastBaselinePayload: null,
+  comparisonPhase: "locked",
+  comparisonResult: null,
+  comparisonError: null,
+  lastComparisonPayload: null,
 };
 
 const elements = {
@@ -102,6 +125,34 @@ const elements = {
   eventList: document.querySelector("#event-list"),
   eventCount: document.querySelector("#event-count"),
   eventsEmpty: document.querySelector("#events-empty"),
+  comparisonStatus: document.querySelector("#comparison-status"),
+  comparisonMetadata: document.querySelector("#comparison-metadata"),
+  comparisonEmpty: document.querySelector("#comparison-empty"),
+  scenarioPlan: document.querySelector("#scenario-plan"),
+  comparisonEmptyTitle: document.querySelector("#comparison-empty-title"),
+  comparisonEmptyCopy: document.querySelector("#comparison-empty-copy"),
+  runComparison: document.querySelector("#run-comparison"),
+  comparisonLoading: document.querySelector("#comparison-loading"),
+  comparisonError: document.querySelector("#comparison-error"),
+  comparisonErrorTitle: document.querySelector("#comparison-error-title"),
+  comparisonErrorMessage: document.querySelector("#comparison-error-message"),
+  retryComparison: document.querySelector("#retry-comparison"),
+  comparisonContent: document.querySelector("#comparison-content"),
+  comparisonNoRecommendation: document.querySelector("#comparison-no-recommendation"),
+  recommendationPanel: document.querySelector("#recommendation-panel"),
+  recommendedScenarioLabel: document.querySelector("#recommended-scenario-label"),
+  recommendationHeading: document.querySelector("#recommendation-heading"),
+  recommendationSummary: document.querySelector("#recommendation-summary"),
+  recommendationDeltas: document.querySelector("#recommendation-deltas"),
+  recommendationFinancialsWrap: document.querySelector("#recommendation-financials-wrap"),
+  recommendationFinancials: document.querySelector("#recommendation-financials"),
+  recommendationAssumptions: document.querySelector("#recommendation-assumptions"),
+  comparisonRunCount: document.querySelector("#comparison-run-count"),
+  comparisonTable: document.querySelector("#comparison-table"),
+  comparisonMetricsEmpty: document.querySelector("#comparison-metrics-empty"),
+  failedScenariosSection: document.querySelector("#failed-scenarios-section"),
+  failedScenarioCount: document.querySelector("#failed-scenario-count"),
+  failedScenarioList: document.querySelector("#failed-scenario-list"),
   toast: document.querySelector("#toast"),
 };
 
@@ -149,6 +200,8 @@ function presentationUnit(key) {
   if (key.endsWith("_hours")) return "h";
   if (key.endsWith("_minutes")) return "min";
   if (key.endsWith("_seconds")) return "s";
+  if (key.endsWith("_days")) return "days";
+  if (key.endsWith("_years")) return "years";
   if (key.endsWith("_gbp")) return "GBP";
   if (key.endsWith("_usd")) return "USD";
   if (key.endsWith("_eur")) return "EUR";
@@ -343,14 +396,19 @@ function validateSimulationResult(result) {
 }
 
 async function runBaseline(payload) {
+  state.comparisonPhase = "locked";
+  state.comparisonResult = null;
+  state.comparisonError = null;
+  state.lastComparisonPayload = null;
   state.baselinePhase = "loading";
   state.baselineError = null;
   state.lastBaselinePayload = deepClone(payload);
-  renderBaseline();
+  render();
 
   try {
     state.baselineResult = validateSimulationResult(await requestBaseline(payload));
     state.baselinePhase = "ready";
+    state.comparisonPhase = "idle";
     window.dispatchEvent(new CustomEvent("simforge:baseline-ready", {
       detail: { result: deepClone(state.baselineResult) },
     }));
@@ -363,7 +421,138 @@ async function runBaseline(payload) {
       retryable: error.retryable !== false,
     };
   } finally {
-    renderBaseline();
+    render();
+  }
+}
+
+async function mockComparison() {
+  await new Promise((resolve) => window.setTimeout(resolve, 760));
+  return loadFixture("scenario-comparison.json");
+}
+
+async function liveComparison(payload) {
+  const response = await fetch(ROUTES.scenarios, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const body = await response.json().catch(() => null);
+  if (!response.ok) {
+    const apiError = body?.error;
+    const error = new Error(apiError?.message || "The scenario comparison failed.");
+    error.code = apiError?.code || "scenario_comparison_failed";
+    error.retryable = Boolean(apiError?.retryable);
+    throw error;
+  }
+  return body;
+}
+
+async function requestComparison(payload) {
+  return state.mode === "mock" ? mockComparison() : liveComparison(payload);
+}
+
+function validateScenarioRun(run, { baseline = false } = {}) {
+  if (
+    !run ||
+    typeof run.id !== "string" ||
+    typeof run.label !== "string" ||
+    !["completed", "failed"].includes(run.status)
+  ) {
+    throw new Error("The comparison contains an invalid scenario run.");
+  }
+  if (baseline && run.status !== "completed") {
+    throw new Error("The comparison baseline must be completed.");
+  }
+  if (run.status === "completed") {
+    if (!run.result || run.error != null) {
+      throw new Error(`Completed run ${run.id} requires a result and no error.`);
+    }
+    validateSimulationResult(run.result);
+  } else if (
+    run.result != null ||
+    !run.error ||
+    typeof run.error.code !== "string" ||
+    typeof run.error.message !== "string" ||
+    typeof run.error.retryable !== "boolean"
+  ) {
+    throw new Error(`Failed run ${run.id} requires a safe error and no result.`);
+  }
+  return run;
+}
+
+function validateRecommendation(recommendation, completedIds) {
+  if (recommendation == null) return null;
+  if (
+    typeof recommendation !== "object" ||
+    typeof recommendation.scenario_id !== "string" ||
+    !completedIds.has(recommendation.scenario_id) ||
+    typeof recommendation.title !== "string" ||
+    typeof recommendation.summary !== "string" ||
+    !recommendation.metric_deltas ||
+    typeof recommendation.metric_deltas !== "object" ||
+    Array.isArray(recommendation.metric_deltas)
+  ) {
+    throw new Error("The backend recommendation is invalid.");
+  }
+  for (const [key, delta] of Object.entries(recommendation.metric_deltas)) {
+    const numericFields = [delta?.baseline, delta?.scenario, delta?.absolute_change];
+    if (!delta || numericFields.some((value) => typeof value !== "number" || !Number.isFinite(value))) {
+      throw new Error(`Recommendation delta ${key} is invalid.`);
+    }
+    if (delta.percentage_change != null && (typeof delta.percentage_change !== "number" || !Number.isFinite(delta.percentage_change))) {
+      throw new Error(`Recommendation percentage delta ${key} is invalid.`);
+    }
+  }
+  const financials = recommendation.financials ?? {};
+  if (typeof financials !== "object" || Array.isArray(financials)) {
+    throw new Error("Recommendation financials must be an object.");
+  }
+  for (const [key, value] of Object.entries(financials)) {
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      throw new Error(`Recommendation financial ${key} is invalid.`);
+    }
+  }
+  return recommendation;
+}
+
+function validateScenarioComparison(comparison) {
+  if (!comparison || !comparison.baseline || !Array.isArray(comparison.scenarios) || !comparison.scenarios.length) {
+    throw new Error("The server returned an invalid scenario comparison.");
+  }
+  validateScenarioRun(comparison.baseline, { baseline: true });
+  const ids = new Set([comparison.baseline.id]);
+  const completedIds = new Set();
+  for (const run of comparison.scenarios) {
+    validateScenarioRun(run);
+    if (ids.has(run.id)) throw new Error("Scenario run ids must be unique.");
+    ids.add(run.id);
+    if (run.status === "completed") completedIds.add(run.id);
+  }
+  validateRecommendation(comparison.recommendation, completedIds);
+  return comparison;
+}
+
+async function runComparison(payload) {
+  state.comparisonPhase = "loading";
+  state.comparisonError = null;
+  state.lastComparisonPayload = deepClone(payload);
+  render();
+  try {
+    state.comparisonResult = validateScenarioComparison(await requestComparison(payload));
+    state.comparisonPhase = "ready";
+    window.dispatchEvent(new CustomEvent("simforge:comparison-ready", {
+      detail: { comparison: deepClone(state.comparisonResult) },
+    }));
+  } catch (error) {
+    state.comparisonResult = null;
+    state.comparisonPhase = "error";
+    state.comparisonError = {
+      message: error.message || "The scenario comparison failed.",
+      code: error.code || "scenario_comparison_failed",
+      retryable: error.retryable !== false,
+    };
+  } finally {
+    render();
   }
 }
 
@@ -388,6 +577,10 @@ async function runRequirements(payload) {
   state.baselineResult = null;
   state.baselineError = null;
   state.lastBaselinePayload = null;
+  state.comparisonPhase = "locked";
+  state.comparisonResult = null;
+  state.comparisonError = null;
+  state.lastComparisonPayload = null;
   state.busy = true;
   state.error = null;
   state.lastPayload = deepClone(payload);
@@ -1007,15 +1200,206 @@ function renderBaseline() {
   }
 }
 
+function renderScenarioPlan() {
+  clear(elements.scenarioPlan);
+  SCENARIO_DEFINITIONS.forEach((scenario, index) => {
+    const item = createElement("article", "scenario-plan-item");
+    item.append(createElement("p", "scenario-plan-index", `SCENARIO ${String(index + 1).padStart(2, "0")}`));
+    item.append(createElement("h3", "", scenario.label));
+    const overrides = createElement("ul", "scenario-override-list");
+    for (const [key, value] of Object.entries(scenario.parameter_overrides)) {
+      overrides.append(createElement("li", "", `${humanise(key)} = ${value}`));
+    }
+    item.append(overrides);
+    elements.scenarioPlan.append(item);
+  });
+}
+
+function formatSigned(value) {
+  if (value === 0) return "0";
+  return `${value > 0 ? "+" : ""}${formatNumber(value)}`;
+}
+
+function renderRecommendationAssumptions() {
+  clear(elements.recommendationAssumptions);
+  if (!state.assumptions.length) {
+    elements.recommendationAssumptions.append(createElement("li", "recommendation-assumption-item", "No open assumptions were supplied with the approved model."));
+    return;
+  }
+  for (const assumption of state.assumptions) {
+    const value = formatValue(assumption.value, assumption.unit);
+    elements.recommendationAssumptions.append(createElement(
+      "li",
+      "recommendation-assumption-item",
+      `${humanise(assumption.path)}: ${value}. ${assumption.rationale}`,
+    ));
+  }
+}
+
+function renderRecommendation(recommendation, scenarios) {
+  const hasRecommendation = Boolean(recommendation);
+  elements.recommendationPanel.hidden = !hasRecommendation;
+  elements.comparisonNoRecommendation.hidden = hasRecommendation;
+  if (!hasRecommendation) return;
+
+  const recommendedRun = scenarios.find((run) => run.id === recommendation.scenario_id);
+  elements.recommendedScenarioLabel.textContent = recommendedRun?.label ?? recommendation.scenario_id;
+  elements.recommendationHeading.textContent = recommendation.title;
+  elements.recommendationSummary.textContent = recommendation.summary;
+  clear(elements.recommendationDeltas);
+  for (const [key, delta] of Object.entries(recommendation.metric_deltas)) {
+    const item = createElement("div", "delta-item");
+    item.append(createElement("p", "delta-label", humanise(key)));
+    const unit = delta.unit ? ` ${delta.unit}` : "";
+    const percent = delta.percentage_change == null ? "" : ` · ${formatSigned(delta.percentage_change)}%`;
+    item.append(createElement("span", "delta-change", `${formatSigned(delta.absolute_change)}${unit}${percent}`));
+    item.append(createElement(
+      "span",
+      "delta-context",
+      `${formatNumber(delta.baseline)} → ${formatNumber(delta.scenario)}${unit}`,
+    ));
+    elements.recommendationDeltas.append(item);
+  }
+
+  const financialEntries = Object.entries(recommendation.financials ?? {});
+  elements.recommendationFinancialsWrap.hidden = financialEntries.length === 0;
+  clear(elements.recommendationFinancials);
+  for (const [key, value] of financialEntries) {
+    const item = createElement("div", "financial-item");
+    const presented = presentNumericValue(key, value);
+    item.append(createElement("p", "financial-label", humanise(key)));
+    item.append(createElement("span", "financial-value", `${presented.display}${presented.unit ? ` ${presented.unit}` : ""}`));
+    elements.recommendationFinancials.append(item);
+  }
+  renderRecommendationAssumptions();
+}
+
+function metricKeysForRuns(runs) {
+  const keys = new Set();
+  for (const run of runs) {
+    if (run.status !== "completed") continue;
+    for (const key of Object.keys(run.result.metrics)) keys.add(key);
+  }
+  return [...keys].sort();
+}
+
+function renderComparisonTable(baseline, scenarios, recommendation) {
+  const runs = [baseline, ...scenarios];
+  const metricKeys = metricKeysForRuns(runs);
+  const head = elements.comparisonTable.querySelector("thead");
+  const body = elements.comparisonTable.querySelector("tbody");
+  clear(head);
+  clear(body);
+  elements.comparisonRunCount.textContent = `${runs.length} run${runs.length === 1 ? "" : "s"}`;
+  elements.comparisonMetricsEmpty.hidden = metricKeys.length > 0;
+  elements.comparisonTable.hidden = metricKeys.length === 0;
+
+  if (!metricKeys.length) return;
+  const headerRow = createElement("tr");
+  headerRow.append(createElement("th", "", "Metric"));
+  for (const run of runs) {
+    const isRecommended = recommendation?.scenario_id === run.id;
+    const cell = createElement("th", isRecommended ? "is-recommended" : "");
+    cell.scope = "col";
+    cell.append(createElement("span", "table-run-label", run.label));
+    const status = createElement("span", `table-run-status${run.status === "failed" ? " is-failed" : ""}`, run.status);
+    cell.append(status);
+    if (isRecommended) cell.append(createElement("span", "table-recommended-badge", "Recommended"));
+    headerRow.append(cell);
+  }
+  head.append(headerRow);
+
+  for (const key of metricKeys) {
+    const row = createElement("tr");
+    const label = createElement("th", "", humanise(key));
+    label.scope = "row";
+    row.append(label);
+    for (const run of runs) {
+      const isRecommended = recommendation?.scenario_id === run.id;
+      const cell = createElement("td", isRecommended ? "is-recommended" : "");
+      const value = run.status === "completed" ? run.result.metrics[key] : undefined;
+      if (value === undefined) {
+        cell.textContent = "—";
+      } else {
+        const presented = presentNumericValue(key, value);
+        cell.textContent = `${presented.display}${presented.unit ? ` ${presented.unit}` : ""}`;
+      }
+      row.append(cell);
+    }
+    body.append(row);
+  }
+}
+
+function renderFailedScenarios(scenarios) {
+  const failed = scenarios.filter((run) => run.status === "failed");
+  elements.failedScenariosSection.hidden = failed.length === 0;
+  elements.failedScenarioCount.textContent = `${failed.length} failed`;
+  clear(elements.failedScenarioList);
+  for (const run of failed) {
+    const item = createElement("li", "failed-scenario-item");
+    item.append(createElement("h3", "", run.label));
+    item.append(createElement("p", "", run.error.message));
+    item.append(createElement("span", "failed-code", run.error.code ?? "scenario_failed"));
+    elements.failedScenarioList.append(item);
+  }
+}
+
+function renderComparison() {
+  const phase = state.comparisonPhase;
+  elements.comparisonEmpty.hidden = !["locked", "idle"].includes(phase);
+  elements.comparisonLoading.hidden = phase !== "loading";
+  elements.comparisonError.hidden = phase !== "error";
+  elements.comparisonContent.hidden = phase !== "ready";
+
+  if (phase === "locked") {
+    elements.comparisonStatus.textContent = "Waiting for baseline";
+    elements.comparisonStatus.className = "review-state";
+    elements.comparisonMetadata.textContent = "No comparison loaded";
+    elements.comparisonEmptyTitle.textContent = "Complete the baseline first";
+    elements.comparisonEmptyCopy.textContent = "Scenario comparison unlocks after a valid baseline response.";
+    elements.runComparison.disabled = true;
+  } else if (phase === "idle") {
+    elements.comparisonStatus.textContent = "Ready to compare";
+    elements.comparisonStatus.className = "review-state is-ready";
+    elements.comparisonMetadata.textContent = `${SCENARIO_DEFINITIONS.length} interventions · ${BASELINE_OPTIONS.rollout_count} rollouts each`;
+    elements.comparisonEmptyTitle.textContent = "Baseline completed";
+    elements.comparisonEmptyCopy.textContent = "Compare the three explicit interventions against the same approved ModelSpec and seeded run settings.";
+    elements.runComparison.disabled = false;
+  } else if (phase === "loading") {
+    elements.comparisonStatus.textContent = "Comparing";
+    elements.comparisonStatus.className = "review-state is-ready";
+    elements.comparisonMetadata.textContent = state.mode === "mock" ? "Loading contract fixture" : "Waiting for live scenario engine";
+  } else if (phase === "error") {
+    elements.comparisonStatus.textContent = state.comparisonError?.code ?? "Error";
+    elements.comparisonStatus.className = "review-state is-error";
+    elements.comparisonMetadata.textContent = "No comparison loaded";
+    elements.comparisonErrorTitle.textContent = "The scenarios could not be compared";
+    elements.comparisonErrorMessage.textContent = state.comparisonError?.message ?? "An unexpected comparison error occurred.";
+    elements.retryComparison.hidden = state.comparisonError?.retryable === false;
+  } else if (phase === "ready" && state.comparisonResult) {
+    const { baseline, scenarios, recommendation } = state.comparisonResult;
+    const completedCount = scenarios.filter((run) => run.status === "completed").length;
+    const failedCount = scenarios.length - completedCount;
+    elements.comparisonStatus.textContent = "Completed";
+    elements.comparisonStatus.className = "review-state is-ready";
+    elements.comparisonMetadata.textContent = `${completedCount} completed · ${failedCount} failed`;
+    renderRecommendation(recommendation, scenarios);
+    renderComparisonTable(baseline, scenarios, recommendation);
+    renderFailedScenarios(scenarios);
+  }
+}
+
 function render() {
   renderMode();
   renderSteps();
   renderAgent();
   renderReview();
   renderBaseline();
-  elements.buildModel.disabled = state.busy;
-  elements.reset.disabled = state.busy;
-  for (const button of elements.modeButtons) button.disabled = state.busy;
+  renderComparison();
+  const operationBusy = state.busy || state.baselinePhase === "loading" || state.comparisonPhase === "loading";
+  elements.buildModel.disabled = operationBusy;
+  elements.reset.disabled = operationBusy;
+  for (const button of elements.modeButtons) button.disabled = operationBusy;
 }
 
 function resetWorkspace({ preserveDescription = false } = {}) {
@@ -1037,6 +1421,10 @@ function resetWorkspace({ preserveDescription = false } = {}) {
     baselineResult: null,
     baselineError: null,
     lastBaselinePayload: null,
+    comparisonPhase: "locked",
+    comparisonResult: null,
+    comparisonError: null,
+    lastComparisonPayload: null,
   });
   elements.description.value = description;
   elements.descriptionError.textContent = "";
@@ -1050,6 +1438,7 @@ function updateCharacterCount() {
 
 elements.operationForm.addEventListener("submit", (event) => {
   event.preventDefault();
+  if (state.busy || state.baselinePhase === "loading" || state.comparisonPhase === "loading") return;
   const description = elements.description.value.trim();
   if (!description) {
     elements.descriptionError.textContent = "Describe the operation before building a model.";
@@ -1124,6 +1513,10 @@ elements.agentContent.addEventListener("click", (event) => {
 elements.assumptionList.addEventListener("click", (event) => {
   const target = event.target.closest("[data-action]");
   if (!target) return;
+  if (state.baselinePhase === "loading" || state.comparisonPhase === "loading") {
+    showToast("Wait for the current run to finish before changing assumptions.");
+    return;
+  }
   if (target.dataset.action === "edit-assumption") {
     state.editingAssumption = target.dataset.path;
     renderAssumptions();
@@ -1138,6 +1531,10 @@ elements.assumptionList.addEventListener("submit", (event) => {
   const form = event.target.closest("[data-assumption-path]");
   if (!form) return;
   event.preventDefault();
+  if (state.baselinePhase === "loading" || state.comparisonPhase === "loading") {
+    showToast("Wait for the current run to finish before changing assumptions.");
+    return;
+  }
   const assumption = state.assumptions.find((item) => item.path === form.dataset.assumptionPath);
   if (!assumption) return;
   const input = form.elements.value;
@@ -1192,5 +1589,19 @@ elements.retryBaseline.addEventListener("click", () => {
   if (state.lastBaselinePayload) runBaseline(state.lastBaselinePayload);
 });
 
+elements.runComparison.addEventListener("click", () => {
+  if (!state.modelSpec || state.baselinePhase !== "ready" || state.comparisonPhase !== "idle") return;
+  runComparison({
+    model_spec: deepClone(state.modelSpec),
+    scenarios: deepClone(SCENARIO_DEFINITIONS),
+    ...BASELINE_OPTIONS,
+  });
+});
+
+elements.retryComparison.addEventListener("click", () => {
+  if (state.lastComparisonPayload) runComparison(state.lastComparisonPayload);
+});
+
 updateCharacterCount();
+renderScenarioPlan();
 render();

@@ -332,6 +332,117 @@
         </div>
       </section>
 
+      <section class="comparison-section" id="scenario-comparison" aria-labelledby="comparison-heading">
+        <div class="dashboard-header comparison-header">
+          <div>
+            <p class="eyebrow">Decision comparison <span>03</span></p>
+            <h2 id="comparison-heading">Intervention scenarios</h2>
+            <p class="dashboard-intro">
+              Compare backend-calculated outcomes, downside exposure and supplied financials.
+            </p>
+          </div>
+          <div class="dashboard-run-meta">
+            <span class="review-state" id="comparison-status">Waiting for baseline</span>
+            <span id="comparison-metadata">No comparison loaded</span>
+          </div>
+        </div>
+
+        <div class="comparison-empty" id="comparison-empty">
+          <div class="scenario-plan" id="scenario-plan" aria-label="Scenarios to compare"></div>
+          <div class="comparison-empty-action">
+            <div>
+              <h3 id="comparison-empty-title">Complete the baseline first</h3>
+              <p id="comparison-empty-copy">
+                Scenario comparison unlocks after a valid baseline response.
+              </p>
+            </div>
+            <button class="primary-button" id="run-comparison" type="button" disabled>
+              <span>Compare scenarios</span>
+              <span class="button-arrow" aria-hidden="true">→</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="dashboard-loading" id="comparison-loading" aria-live="polite" hidden>
+          <span class="loading-spinner" aria-hidden="true"></span>
+          <div>
+            <h3>Comparing interventions</h3>
+            <p>Waiting for completed and failed scenario states from the backend.</p>
+          </div>
+        </div>
+
+        <div class="dashboard-error" id="comparison-error" role="alert" hidden>
+          <div>
+            <p class="section-kicker">Comparison unavailable</p>
+            <h3 id="comparison-error-title">The scenario request failed</h3>
+            <p id="comparison-error-message"></p>
+          </div>
+          <button class="secondary-button" id="retry-comparison" type="button">Retry comparison</button>
+        </div>
+
+        <div class="comparison-content" id="comparison-content" hidden>
+          <p class="dashboard-no-data" id="comparison-no-recommendation" hidden>
+            The backend did not supply a recommendation for these runs.
+          </p>
+          <section class="recommendation-panel" id="recommendation-panel" aria-labelledby="recommendation-heading">
+            <div class="recommendation-copy">
+              <div class="recommendation-label-row">
+                <span class="recommendation-badge">Backend recommendation</span>
+                <span id="recommended-scenario-label"></span>
+              </div>
+              <h3 id="recommendation-heading"></h3>
+              <p class="explanation-label">AI-assisted explanation · supplied by backend</p>
+              <p class="recommendation-summary" id="recommendation-summary"></p>
+            </div>
+            <div class="recommendation-evidence">
+              <div>
+                <p class="section-kicker">Simulation evidence</p>
+                <div class="delta-grid" id="recommendation-deltas"></div>
+              </div>
+              <div id="recommendation-financials-wrap">
+                <p class="section-kicker">Supplied financials</p>
+                <div class="financial-grid" id="recommendation-financials"></div>
+              </div>
+            </div>
+            <div class="recommendation-assumptions">
+              <p class="section-kicker">Model assumptions in force</p>
+              <ul id="recommendation-assumptions"></ul>
+            </div>
+          </section>
+
+          <section aria-labelledby="comparison-table-heading">
+            <div class="dashboard-section-heading">
+              <div>
+                <p class="section-index">01</p>
+                <h3 id="comparison-table-heading">Metric comparison</h3>
+              </div>
+              <span id="comparison-run-count">0 runs</span>
+            </div>
+            <div class="comparison-table-wrap">
+              <table class="comparison-table" id="comparison-table">
+                <caption class="sr-only">Baseline and scenario metric comparison</caption>
+                <thead></thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <p class="dashboard-no-data" id="comparison-metrics-empty" hidden>
+              No completed scenario metrics were supplied.
+            </p>
+          </section>
+
+          <section id="failed-scenarios-section" aria-labelledby="failed-scenarios-heading" hidden>
+            <div class="dashboard-section-heading">
+              <div>
+                <p class="section-index">02</p>
+                <h3 id="failed-scenarios-heading">Incomplete scenarios</h3>
+              </div>
+              <span id="failed-scenario-count">0 failed</span>
+            </div>
+            <ul class="failed-scenario-list" id="failed-scenario-list"></ul>
+          </section>
+        </div>
+      </section>
+
       <footer class="footer">
         <span>SIMFORGE / AI MODELLING</span>
         <span>The simulator owns the numbers.</span>
