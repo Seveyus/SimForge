@@ -284,3 +284,82 @@ def test_requirements_reports_unavailable_until_the_agent_lands(client):
     if response.status_code == 200:
         pytest.skip("requirements_agent is implemented")
     assert_error_envelope(response, "gemini_unavailable")
+
+
+# --------------------------------------------------------------------------
+# Concurrency, timeouts and the pre-demo probe
+# --------------------------------------------------------------------------
+
+def test_requests_do_not_block_each_other(client):
+    """A slow simulation must not stall the event loop for everyone else.
+
+    The routes are `async def` but the pipeline is synchronous and spends
+    seconds in CPU work and Daytona round trips, so it has to run in a thread.
+    """
+    import threading
+    import time
+
+    import app.api_contract as ac
+
+    real = ac.run_decision_pipeline
+    started = threading.Event()
+
+    def slow(*args, **kwargs):
+        started.set()
+        time.sleep(1.0)
+        return real(*args, **kwargs)
+
+    ac.run_decision_pipeline = slow
+    try:
+        result: dict = {}
+
+        def fire():
+            result["compare"] = client.post(COMPARE, json=compare_payload()).status_code
+
+        worker = threading.Thread(target=fire)
+        worker.start()
+        assert started.wait(timeout=10)
+        # while the comparison is mid-flight, health must still answer promptly
+        t0 = time.perf_counter()
+        assert client.get("/api/health").status_code == 200
+        assert time.perf_counter() - t0 < 0.8, "the event loop was blocked"
+        worker.join(timeout=60)
+        assert result["compare"] == 200
+    finally:
+        ac.run_decision_pipeline = real
+
+
+def test_a_hanging_simulation_times_out_instead_of_hanging_forever(client, monkeypatch):
+    import time
+
+    import app.main as main
+
+    monkeypatch.setattr(main, "REQUEST_TIMEOUT_S", 0.3)
+    monkeypatch.setattr(
+        "app.api_contract.run_decision_pipeline",
+        lambda *a, **k: time.sleep(5),
+    )
+    error = assert_error_envelope(
+        client.post(COMPARE, json=compare_payload()), "operation_timeout"
+    )
+    assert error["retryable"] is True
+
+
+def test_deep_health_probe_reports_without_raising(client, monkeypatch):
+    """A probe that 500s tells you less than one that says what went wrong."""
+    monkeypatch.setattr("app.main.daytona_available", lambda: True)
+    monkeypatch.setattr(
+        "app.daytona_runner.DaytonaSimulationRunner.prepare",
+        lambda self: (_ for _ in ()).throw(RuntimeError("api key rejected")),
+    )
+    body = client.get("/api/health?deep=1").json()
+    assert body["status"] == "degraded"
+    assert body["daytona"]["status"] == "unavailable"
+    assert "api key rejected" not in json.dumps(body), "probe must not leak detail"
+
+
+def test_deep_health_says_when_daytona_is_not_configured(client, monkeypatch):
+    monkeypatch.setattr("app.main.daytona_available", lambda: False)
+    body = client.get("/api/health?deep=1").json()
+    assert body["daytona"]["status"] == "not_configured"
+    assert body["status"] == "ok"  # local execution is a valid mode, not a fault

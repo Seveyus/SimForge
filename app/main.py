@@ -18,7 +18,9 @@ Two rules this module exists to enforce:
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 import uuid
 from pathlib import Path
 from typing import Any, Callable
@@ -27,6 +29,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
+from starlette.concurrency import run_in_threadpool
 
 from app.api_contract import run_baseline, run_scenario_comparison
 from app.env import load_env
@@ -52,6 +55,10 @@ ERROR_STATUS: dict[str, int] = {
     "operation_timeout": 504,
     "internal_error": 500,
 }
+
+#: Hard ceiling on one simulation request. A Daytona call that hangs must fail
+#: the request rather than hold a connection open for the rest of the demo.
+REQUEST_TIMEOUT_S = float(os.environ.get("SIMFORGE_REQUEST_TIMEOUT_S", "180"))
 
 SAFE_MESSAGES: dict[str, str] = {
     "invalid_request": "The request could not be read.",
@@ -146,20 +153,32 @@ def create_app() -> FastAPI:
     # -- routes ---------------------------------------------------------
 
     @app.get("/api/health")
-    async def health() -> dict[str, Any]:
-        """Liveness, and which execution backend a run would actually use."""
-        return {
+    async def health(deep: bool = False) -> dict[str, Any]:
+        """Liveness, and which execution backend a run would actually use.
+
+        `?deep=1` actually provisions a sandbox and runs one simulation in it.
+        Worth doing once before a demo: it is the difference between finding out
+        Daytona is unreachable now, and finding out on stage.
+        """
+        body: dict[str, Any] = {
             "status": "ok",
             "execution": "daytona" if daytona_available() else "local",
             "daytona_configured": daytona_available(),
         }
+        if deep:
+            body["daytona"] = await run_in_threadpool(probe_daytona)
+            # "not_configured" means local execution, which is a valid mode -
+            # only an actually unreachable Daytona is a degraded state.
+            if body["daytona"]["status"] == "unavailable":
+                body["status"] = "degraded"
+        return body
 
     @app.post("/api/simulations/baseline")
     async def simulations_baseline(request: Request) -> dict[str, Any]:
         """Run the validated baseline model. Returns a `SimulationResult`."""
         payload = await read_json(request)
         validated = parse_request(SimulationRequest, payload)
-        return run_in_executor(
+        return await execute(
             run_baseline,
             {
                 "model_spec": validated.model_spec.model_dump(mode="json"),
@@ -181,7 +200,7 @@ def create_app() -> FastAPI:
         """
         payload = await read_json(request)
         validated = parse_request(ScenarioComparisonRequest, payload)
-        return run_in_executor(
+        return await execute(
             run_scenario_comparison,
             {
                 "model_spec": validated.model_spec.model_dump(mode="json"),
@@ -210,7 +229,7 @@ def create_app() -> FastAPI:
                 "The modelling service is not configured yet.",
                 retryable=True,
             ) from exc
-        return handle_requirements_request(payload)
+        return await run_in_threadpool(handle_requirements_request, payload)
 
     if STATIC_DIR.exists():
         app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
@@ -257,7 +276,24 @@ def execution_mode(request: Request) -> str:
     return mode
 
 
-def run_in_executor(fn: Callable[[dict[str, Any]], Any], payload: dict[str, Any]) -> Any:
+async def execute(fn: Callable[[dict[str, Any]], Any], payload: dict[str, Any]) -> Any:
+    """Run a pipeline call off the event loop, under a timeout.
+
+    The pipeline is synchronous and spends seconds in CPU work and Daytona round
+    trips. Calling it directly from an `async def` route would block the event
+    loop, so a second request - or the frontend fetching the baseline and the
+    comparison at once - would stall behind the first.
+    """
+    try:
+        return await asyncio.wait_for(
+            run_in_threadpool(run_pipeline, fn, payload), timeout=REQUEST_TIMEOUT_S
+        )
+    except asyncio.TimeoutError as exc:
+        logger.error("request exceeded %.0fs", REQUEST_TIMEOUT_S)
+        raise ApiError("operation_timeout") from exc
+
+
+def run_pipeline(fn: Callable[[dict[str, Any]], Any], payload: dict[str, Any]) -> Any:
     """Run a pipeline call, mapping its failures onto the documented codes."""
     from app.daytona_runner import DaytonaExecutionError
 
@@ -277,6 +313,43 @@ def run_in_executor(fn: Callable[[dict[str, Any]], Any], payload: dict[str, Any]
     except Exception as exc:  # noqa: BLE001
         logger.exception("simulation failed")
         raise ApiError("simulation_failed") from exc
+
+
+def probe_daytona() -> dict[str, Any]:
+    """Round-trip one tiny simulation through a real sandbox.
+
+    Never raises: a health check that 500s tells you less than one that reports
+    what went wrong.
+    """
+    import time
+
+    if not daytona_available():
+        return {"status": "not_configured",
+                "detail": "DAYTONA_API_KEY is not set; runs execute locally"}
+    started = time.perf_counter()
+    try:
+        from app.daytona_runner import DaytonaSimulationRunner
+
+        with DaytonaSimulationRunner() as runner:
+            runner.prepare()
+            parsed = runner.run(
+                runner.baseline_sandbox,
+                {"mode": "simulate", "config": {"simulation_days": 1}, "seed": 1},
+            )
+        return {
+            "status": "ok",
+            "roundtrip_seconds": round(time.perf_counter() - started, 2),
+            "isolation_mode": runner.isolation_mode,
+            "fork_unavailable_reason": runner.fork_unavailable_reason,
+            "sandbox_python": (parsed.get("environment") or {}).get("python"),
+        }
+    except Exception as exc:  # noqa: BLE001 - a probe reports, it does not raise
+        logger.warning("daytona probe failed: %s", exc)
+        return {
+            "status": "unavailable",
+            "detail": f"{type(exc).__name__}",
+            "roundtrip_seconds": round(time.perf_counter() - started, 2),
+        }
 
 
 app = create_app()
