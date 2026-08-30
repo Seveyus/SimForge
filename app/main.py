@@ -19,6 +19,7 @@ Two rules this module exists to enforce:
 from __future__ import annotations
 
 import asyncio
+import importlib
 import logging
 import os
 import uuid
@@ -34,6 +35,7 @@ from starlette.concurrency import run_in_threadpool
 from app.api_contract import run_baseline, run_scenario_comparison
 from app.env import load_env
 from app.models import (
+    RequirementsRequest,
     ScenarioComparisonRequest,
     SimulationRequest,
 )
@@ -67,6 +69,7 @@ SAFE_MESSAGES: dict[str, str] = {
     "execution_unavailable": "The execution service is unavailable.",
     "operation_timeout": "The operation timed out.",
     "gemini_unavailable": "The modelling service is unavailable.",
+    "gemini_invalid_response": "The modelling service returned an unusable response.",
     "internal_error": "Something went wrong.",
 }
 
@@ -215,21 +218,14 @@ def create_app() -> FastAPI:
     async def requirements(request: Request) -> dict[str, Any]:
         """Extract or refine a `ModelSpec` and return clarification questions.
 
-        Delegates to `app.requirements_agent` when it is available. Until that
-        module lands this returns the documented `gemini_unavailable` error
+        Delegates to `app.requirements_agent.build_requirements`. Until that
+        module lands, this returns the documented `gemini_unavailable` error
         rather than a stub, so the frontend exercises its real error path
         instead of being fed a fake success.
         """
         payload = await read_json(request)
-        try:
-            from app.requirements_agent import handle_requirements_request
-        except ImportError as exc:
-            raise ApiError(
-                "gemini_unavailable",
-                "The modelling service is not configured yet.",
-                retryable=True,
-            ) from exc
-        return await run_in_threadpool(handle_requirements_request, payload)
+        validated = parse_request(RequirementsRequest, payload)
+        return await run_in_threadpool(run_requirements, validated)
 
     if STATIC_DIR.exists():
         app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
@@ -313,6 +309,65 @@ def run_pipeline(fn: Callable[[dict[str, Any]], Any], payload: dict[str, Any]) -
     except Exception as exc:  # noqa: BLE001
         logger.exception("simulation failed")
         raise ApiError("simulation_failed") from exc
+
+
+def run_requirements(validated: Any) -> dict[str, Any]:
+    """Call the requirements agent, mapping its errors onto the documented codes.
+
+    The agent raises a small typed hierarchy that lines up exactly with the
+    error table in `static/fixtures/README.md`, so the mapping is direct. Only
+    configuration messages are passed through - they are ours and actionable
+    ("GEMINI_MODEL is required"). Provider and schema failures get a generic
+    message, because their text can carry prompt or response fragments.
+    """
+    try:
+        # import_module resolves through sys.modules, so the agent can be
+        # substituted in tests; `from app import X` would read the attribute
+        # already bound on the package and ignore the substitution.
+        requirements_agent = importlib.import_module("app.requirements_agent")
+    except ImportError as exc:
+        raise ApiError(
+            "gemini_unavailable",
+            "The modelling service is not configured yet.",
+            retryable=True,
+        ) from exc
+
+    def error(name: str) -> type[BaseException]:
+        return getattr(requirements_agent, name, _Unraisable)
+
+    try:
+        result = requirements_agent.build_requirements(
+            validated.description,
+            validated.draft_spec,
+            validated.answers,
+        )
+    except error("RequirementsConfigurationError") as exc:
+        # Our own configuration, safe and useful to surface verbatim.
+        logger.error("requirements agent misconfigured: %s", exc)
+        raise ApiError("gemini_unavailable", str(exc), retryable=False) from exc
+    except error("RequirementsInputError") as exc:
+        raise ApiError("validation_error", str(exc)) from exc
+    except error("RequirementsResponseError") as exc:
+        logger.warning("gemini returned unusable output: %s", exc)
+        raise ApiError("gemini_invalid_response") from exc
+    except error("RequirementsProviderError") as exc:
+        logger.warning("gemini unavailable: %s", exc)
+        raise ApiError("gemini_unavailable") from exc
+    except ApiError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("requirements agent failed")
+        raise ApiError("internal_error") from exc
+
+    return result.model_dump(mode="json") if hasattr(result, "model_dump") else result
+
+
+class _Unraisable(BaseException):
+    """Placeholder for an exception class the agent does not define.
+
+    Lets the `except` chain above stay declarative even if the agent's error
+    hierarchy changes: a missing class simply never matches.
+    """
 
 
 def probe_daytona() -> dict[str, Any]:

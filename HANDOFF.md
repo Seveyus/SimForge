@@ -215,18 +215,37 @@ send one, matching `request_id` in the error body.
 
 ---
 
-## `/api/requirements` is yours
+## `/api/requirements` — already wired to your agent
 
-It currently returns `503 gemini_unavailable` — deliberately, so you build
-against the real error path rather than a stub success. To activate it, add
-`app/requirements_agent.py` exposing:
+The route now calls **`app.requirements_agent.build_requirements(description,
+draft_spec, answers)`** — your actual signature, verified against your branch. It
+runs in a thread, so the blocking Gemini call is fine, and `main.py` needs no
+change when you merge.
 
-```python
-def handle_requirements_request(payload: dict) -> dict:   # -> RequirementsResult
+Your error hierarchy maps straight onto the documented codes:
+
+| Your exception | HTTP | code |
+|---|---|---|
+| `RequirementsConfigurationError` | 503 | `gemini_unavailable`, message passed through (it is actionable: *"GEMINI_MODEL is required"*), `retryable: false` |
+| `RequirementsInputError` | 422 | `validation_error` |
+| `RequirementsResponseError` | 502 | `gemini_invalid_response` |
+| `RequirementsProviderError` | 503 | `gemini_unavailable` |
+| anything else | 500 | `internal_error` |
+
+Provider and schema messages are logged server-side and replaced with a generic
+one, since their text can carry prompt or response fragments. Configuration
+messages pass through because they tell you what to fix.
+
+Set these before the route works:
+
+```bash
+GEMINI_API_KEY=...        # in .env
+GEMINI_MODEL=gemini-2.5-flash
 ```
 
-The route picks it up automatically; `main.py` needs no change. It runs in a
-thread, so blocking Gemini calls are fine.
+Until `app/requirements_agent.py` exists on the branch you are running, the
+route returns `503 gemini_unavailable` — deliberately, so the frontend exercises
+its real error path rather than a stub success.
 
 If you want the ModelSpec straight through to a simulation without an LLM,
 `app.api_contract.model_spec_to_config(spec)` does the mapping and

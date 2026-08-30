@@ -363,3 +363,164 @@ def test_deep_health_says_when_daytona_is_not_configured(client, monkeypatch):
     body = client.get("/api/health?deep=1").json()
     assert body["daytona"]["status"] == "not_configured"
     assert body["status"] == "ok"  # local execution is a valid mode, not a fault
+
+
+# --------------------------------------------------------------------------
+# /api/requirements wiring
+#
+# The agent lives on the teammate's branch. These tests stand in a module with
+# its exact public interface (build_requirements + the typed error hierarchy),
+# so the route is proven against that contract before the branches meet.
+# --------------------------------------------------------------------------
+
+import sys
+import types
+
+
+class _Result:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def model_dump(self, mode="python"):
+        return self._payload
+
+
+def install_agent(monkeypatch, behaviour):
+    """Install a stand-in app.requirements_agent with the real interface."""
+    module = types.ModuleType("app.requirements_agent")
+
+    class RequirementsAgentError(RuntimeError):
+        pass
+
+    class RequirementsConfigurationError(RequirementsAgentError):
+        pass
+
+    class RequirementsInputError(RequirementsAgentError):
+        pass
+
+    class RequirementsResponseError(RequirementsAgentError):
+        pass
+
+    class RequirementsProviderError(RequirementsAgentError):
+        pass
+
+    module.RequirementsAgentError = RequirementsAgentError
+    module.RequirementsConfigurationError = RequirementsConfigurationError
+    module.RequirementsInputError = RequirementsInputError
+    module.RequirementsResponseError = RequirementsResponseError
+    module.RequirementsProviderError = RequirementsProviderError
+    module.calls = []
+
+    def build_requirements(description, existing_spec=None, answers=None, **kwargs):
+        module.calls.append((description, existing_spec, answers))
+        return behaviour(module)
+
+    module.build_requirements = build_requirements
+    monkeypatch.setitem(sys.modules, "app.requirements_agent", module)
+    return module
+
+
+REQUIREMENTS_BODY = {"description": "We produce about a tonne of CO2 an hour."}
+
+
+def test_requirements_returns_the_agent_result(client, monkeypatch):
+    payload = {"status": "needs_clarification", "questions": [], "assumptions": []}
+    install_agent(monkeypatch, lambda m: _Result(payload))
+    response = client.post("/api/requirements", json=REQUIREMENTS_BODY)
+    assert response.status_code == 200
+    assert response.json() == payload
+
+
+def test_requirements_passes_description_draft_and_answers(client, monkeypatch):
+    module = install_agent(monkeypatch, lambda m: _Result({"status": "ready"}))
+    body = dict(REQUIREMENTS_BODY, answers={"tank_count": 3})
+    assert client.post("/api/requirements", json=body).status_code == 200
+    description, existing_spec, answers = module.calls[0]
+    assert description == REQUIREMENTS_BODY["description"]
+    assert existing_spec is None
+    assert answers == {"tank_count": 3}
+
+
+def test_requirements_validates_the_request_body(client, monkeypatch):
+    install_agent(monkeypatch, lambda m: _Result({}))
+    error = assert_error_envelope(
+        client.post("/api/requirements", json={"description": ""}), "validation_error"
+    )
+    assert error["field_errors"]
+
+
+@pytest.mark.parametrize(
+    "error_name,code",
+    [
+        ("RequirementsInputError", "validation_error"),
+        ("RequirementsResponseError", "gemini_invalid_response"),
+        ("RequirementsProviderError", "gemini_unavailable"),
+    ],
+)
+def test_agent_errors_map_to_the_documented_codes(client, monkeypatch, error_name, code):
+    def raise_it(module):
+        raise getattr(module, error_name)("provider said something internal")
+
+    install_agent(monkeypatch, raise_it)
+    assert_error_envelope(client.post("/api/requirements", json=REQUIREMENTS_BODY), code)
+
+
+def test_provider_failures_do_not_leak_their_text(client, monkeypatch):
+    """A Gemini error can carry prompt or response fragments."""
+    def raise_it(module):
+        raise module.RequirementsProviderError("quota exceeded for key sk-abc123")
+
+    install_agent(monkeypatch, raise_it)
+    error = client.post("/api/requirements", json=REQUIREMENTS_BODY).json()["error"]
+    assert "sk-abc123" not in error["message"]
+
+
+def test_configuration_errors_are_surfaced_because_they_are_actionable(client, monkeypatch):
+    def raise_it(module):
+        raise module.RequirementsConfigurationError("GEMINI_MODEL is required")
+
+    install_agent(monkeypatch, raise_it)
+    error = assert_error_envelope(
+        client.post("/api/requirements", json=REQUIREMENTS_BODY), "gemini_unavailable"
+    )
+    assert "GEMINI_MODEL is required" in error["message"]
+    assert error["retryable"] is False  # retrying will not create the env var
+
+
+def test_an_unexpected_agent_failure_is_a_safe_500(client, monkeypatch):
+    def raise_it(module):
+        raise RuntimeError("secret internal detail")
+
+    install_agent(monkeypatch, raise_it)
+    error = assert_error_envelope(
+        client.post("/api/requirements", json=REQUIREMENTS_BODY), "internal_error"
+    )
+    assert "secret internal detail" not in error["message"]
+
+
+def test_the_agent_runs_off_the_event_loop(client, monkeypatch):
+    """build_requirements makes a blocking Gemini call."""
+    import threading
+    import time
+
+    started = threading.Event()
+
+    def slow(module):
+        started.set()
+        time.sleep(0.8)
+        return _Result({"status": "ready"})
+
+    install_agent(monkeypatch, slow)
+    done: dict = {}
+
+    def fire():
+        done["code"] = client.post("/api/requirements", json=REQUIREMENTS_BODY).status_code
+
+    worker = threading.Thread(target=fire)
+    worker.start()
+    assert started.wait(timeout=5)
+    t0 = time.perf_counter()
+    assert client.get("/api/health").status_code == 200
+    assert time.perf_counter() - t0 < 0.5, "the event loop was blocked"
+    worker.join(timeout=30)
+    assert done["code"] == 200
