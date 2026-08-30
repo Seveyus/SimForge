@@ -126,6 +126,10 @@ bad. `?execution=daytona` forces it. Default picks by whether the key is set.
 - His frontend validators, extracted from `app.js` and run against a live
   response, accept it
 - Zero leaked sandboxes after every run
+- Live browser-level Gemini → Daytona end-to-end run passed on 2026-08-30:
+  Gemini produced a `ModelSpec` after clarification, the UI rendered the
+  100-rollout baseline and 720-point chart, and all three counterfactual
+  scenarios succeeded with zero browser console errors
 
 ---
 
@@ -136,7 +140,7 @@ bad. `?execution=daytona` forces it. Default picks by whether the key is set.
 | **Cold start ~25 s** | Warm up before presenting. Highest-impact risk. |
 | `metadata.ranking` unused by the UI | The ranking and its stated rule are in the payload but not rendered. Cheap win if there is time. |
 | Metric labels are raw keys | The comparison table shows `annual_value_gbp` rather than "Annual value". Cosmetic. |
-| Gemini untested live | The agent works offline via `FixtureExtractionClient`. If `GEMINI_API_KEY` is unset, `/api/requirements` returns `503 gemini_unavailable` and the UI shows its error state — the simulation half still works. |
+| Gemini requires a configured key | Live extraction is verified. If `GEMINI_API_KEY` is unset, `/api/requirements` returns `503 gemini_unavailable` and the UI shows its error state — the simulation half still works. |
 | No `simulator_generator` route | AI-generated simulators exist as a module but are not wired to an endpoint. The demo uses the known-good simulator, which is the stronger claim anyway. |
 
 If Daytona fails on stage, add `?execution=local` — everything still works and
