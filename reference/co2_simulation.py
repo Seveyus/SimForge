@@ -83,7 +83,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "initial_storage_t": 20.0,           # absolute, see note below
     # --- collections ----------------------------------------------------
     "collections_per_day": 1,
-    "tanker_capacity_t": 25.0,
+    "tanker_capacity_t": 24.0,
+    "min_collection_load_t": 0.0,        # stand a trip down below this level
     "first_collection_hour": 8.0,        # hour-of-day of the first slot
     "missed_collection_probability": 0.08,
     "collection_delay_probability": 0.35,
@@ -96,6 +97,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
 # `initial_storage_t` is deliberately an *absolute* tonnage rather than a
 # fraction of capacity: a counterfactual that adds a tank must start from the
 # same physical inventory as the baseline, otherwise the comparison is unfair.
+#
+# `min_collection_load_t` models a dispatch policy rather than physics: a
+# scheduled trip is stood down if there is less than this in storage when the
+# tanker is due. It matters for the economics of the "extra collection per day"
+# intervention - without it that scenario pays a full trip cost to pick up a
+# nearly empty load, which no operator would do. It is a deterministic check,
+# so it does not consume randomness and cannot disturb common random numbers.
 
 _POSITIVE_KEYS = (
     "simulation_days",
@@ -105,6 +113,7 @@ _POSITIVE_KEYS = (
 )
 _NON_NEGATIVE_KEYS = (
     "production_rate_t_per_hour",
+    "min_collection_load_t",
     "production_variability_pct",
     "initial_storage_t",
     "first_collection_hour",
@@ -295,6 +304,7 @@ def simulate(config: dict[str, Any] | None = None, seed: int | None = None) -> d
     n_completed = 0
     n_missed = 0
     n_delayed = 0
+    n_stood_down = 0
     curtailment_hours = 0.0
 
     curtailing = False
@@ -352,6 +362,19 @@ def simulate(config: dict[str, Any] | None = None, seed: int | None = None) -> d
                         "delay_minutes": round(col["delay_minutes"], 2),
                     }
                 )
+            if level < cfg["min_collection_load_t"]:
+                n_stood_down += 1
+                events.append(
+                    {
+                        "t_hours": round(col["due_t_hours"], 4),
+                        "type": "collection_stood_down",
+                        "day": col["day"],
+                        "slot": col["slot"],
+                        "storage_level_t": round(level, 4),
+                        "min_load_t": cfg["min_collection_load_t"],
+                    }
+                )
+                continue
             loaded = min(tanker_capacity, level)
             level -= loaded
             collected += loaded
@@ -473,6 +496,7 @@ def simulate(config: dict[str, Any] | None = None, seed: int | None = None) -> d
         "collections_scheduled": n_scheduled,
         "collections_completed": n_completed,
         "collections_missed": n_missed,
+        "collections_stood_down": n_stood_down,
         "collections_delayed": n_delayed,
         "collections_pending_at_end": n_scheduled - next_collection,
         # curtailment
