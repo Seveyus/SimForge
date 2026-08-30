@@ -12,7 +12,7 @@ pinned FastAPI, Daytona or pytest versions.
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env          # fill in DAYTONA_API_KEY (+ GEMINI_API_KEY, GEMINI_MODEL)
+cp .env.example .env          # DAYTONA_API_KEY, GEMINI_API_KEY, GEMINI_MODEL=gemini-3.6-flash
 python scripts/build_snapshot.py
 uvicorn app.main:app
 ```
@@ -126,6 +126,10 @@ bad. `?execution=daytona` forces it. Default picks by whether the key is set.
 - His frontend validators, extracted from `app.js` and run against a live
   response, accept it
 - Zero leaked sandboxes after every run
+- **The whole demo flow, live end to end** (Gemini + Daytona):
+  natural language → `needs_clarification` (it asks for the objective) → answer →
+  `ready` ModelSpec with provenance → baseline 13.08 t lost → three scenarios in
+  three isolated sandboxes in ~3 s → recommends the third tank
 - Live browser-level Gemini → Daytona end-to-end run passed on 2026-08-30:
   Gemini produced a `ModelSpec` after clarification, the UI rendered the
   100-rollout baseline and 720-point chart, and all three counterfactual
