@@ -15,6 +15,7 @@ import argparse
 import json
 import sys
 
+from app.env import load_env
 from app.monte_carlo import DEFAULT_BASE_SEED, DEFAULT_N_RUNS
 from app.pipeline import daytona_available, run_decision_pipeline
 
@@ -157,6 +158,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", metavar="PATH", help="write the full decision payload")
     parser.add_argument("--quiet", action="store_true", help="only print the recommendation")
     args = parser.parse_args(argv)
+    load_env()
 
     if args.execution == "daytona" and not daytona_available():
         print("DAYTONA_API_KEY is not set - export it or use --execution local",

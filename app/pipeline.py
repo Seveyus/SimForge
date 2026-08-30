@@ -34,6 +34,9 @@ EXECUTION_AUTO = "auto"
 
 def daytona_available() -> bool:
     """True when a Daytona API key is configured and the SDK is importable."""
+    from app.env import load_env
+
+    load_env()
     if not os.environ.get("DAYTONA_API_KEY"):
         return False
     try:
