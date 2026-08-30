@@ -152,6 +152,9 @@ def request_to_scenarios(scenarios: list[dict[str, Any]] | None) -> list[dict[st
                 "name": scenario["id"],
                 "label": scenario.get("label", scenario["id"]),
                 "overrides": overrides,
+                # echoed back verbatim in the response: the caller should see the
+                # names it sent, not our internal unit-suffixed keys
+                "parameter_overrides": dict(scenario.get("parameter_overrides") or {}),
                 "economics": scenario.get("economics") or default_economics(overrides),
             }
         )
@@ -160,14 +163,92 @@ def request_to_scenarios(scenarios: list[dict[str, Any]] | None) -> list[dict[st
 
 # ---------------------------------------------------------------------------
 # Response shaping
+#
+# `app/models.py` is strict: ContractModel forbids extra fields, metrics must be
+# finite numbers, events need a label and a severity, and a Recommendation must
+# name a completed scenario. Everything below exists to emit payloads that pass
+# those validators on the first try. `SimulationResult.metadata` is the one
+# free-form field in the contract, so the richer simulation detail (stats,
+# financials, ranking, assumptions, execution) is carried there rather than
+# bolted onto the response as extra keys that would be rejected.
 # ---------------------------------------------------------------------------
 
+SEVERITY_INFO = "info"
+SEVERITY_WARNING = "warning"
+SEVERITY_CRITICAL = "critical"
+
+#: Simulator event type -> (severity, human label builder). The simulator emits
+#: machine-readable events; the contract also wants something displayable.
+EVENT_PRESENTATION: dict[str, tuple[str, Any]] = {
+    "collection_scheduled": (
+        SEVERITY_INFO,
+        lambda e: f"Collection scheduled (day {e.get('day')}, slot {e.get('slot')})",
+    ),
+    "collection_completed": (
+        SEVERITY_INFO,
+        lambda e: f"Tanker collected {e.get('collected_t', 0):.1f} t"
+        + (" (partial load)" if e.get("partial_load") else ""),
+    ),
+    "collection_delayed": (
+        SEVERITY_WARNING,
+        lambda e: f"Collection delayed by {e.get('delay_minutes', 0):.0f} min",
+    ),
+    "collection_missed": (
+        SEVERITY_WARNING,
+        lambda e: f"Collection missed, storage at {e.get('storage_level_t', 0):.1f} t",
+    ),
+    "collection_stood_down": (
+        SEVERITY_INFO,
+        lambda e: f"Collection stood down, only {e.get('storage_level_t', 0):.1f} t to collect",
+    ),
+    "storage_capacity_reached": (
+        SEVERITY_CRITICAL,
+        lambda e: f"Storage full at {e.get('capacity_t', 0):.0f} t",
+    ),
+    "production_curtailed": (
+        SEVERITY_CRITICAL,
+        lambda e: f"Production curtailed for {e.get('duration_hours', 0):.1f} h, "
+        f"{e.get('lost_production_t', 0):.1f} t lost",
+    ),
+}
+
+#: Metric keys that are not numbers and therefore cannot live in
+#: `SimulationResult.metrics` (which is `dict[str, NumericValue]`).
+NON_NUMERIC_METRICS = ("payback_status",)
+
+
+def to_contract_events(events: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """Reshape simulator events into the contract's event schema.
+
+    The simulator emits ``{t_hours, type, ...fields}``; the contract wants
+    ``{time_hours, type, label, severity, details}`` with everything else nested
+    under `details`.
+    """
+    out: list[dict[str, Any]] = []
+    for event in events or []:
+        severity, label_for = EVENT_PRESENTATION.get(
+            event["type"], (SEVERITY_INFO, lambda e: e["type"].replace("_", " ").capitalize())
+        )
+        details = {k: v for k, v in event.items() if k not in ("t_hours", "type")}
+        out.append(
+            {
+                "time_hours": event["t_hours"],
+                "type": event["type"],
+                "label": label_for(event),
+                "severity": severity,
+                "details": details,
+            }
+        )
+    return out
+
+
 def to_frontend_timeseries(run: dict[str, Any] | None) -> list[dict[str, Any]]:
-    """Reshape a representative run into the frontend's timeseries rows.
+    """Reshape a representative run into the contract's timeseries rows.
 
     The frontend plots a *cumulative* loss curve, so the per-window losses are
     accumulated here rather than in the simulator, which keeps the simulator's
-    output additive and its mass balance checkable.
+    output additive and its mass balance checkable. `time_hours` is unique and
+    ascending, as `SimulationResult` requires.
     """
     if not run:
         return []
@@ -180,13 +261,27 @@ def to_frontend_timeseries(run: dict[str, Any] | None) -> list[dict[str, Any]]:
                 "time_hours": row["t_hours"],
                 "tank_level_t": row["storage_level_t"],
                 "cumulative_lost_production_t": round(cumulative, 4),
-                # kept alongside the contract fields, for richer charts
+                # extra series are allowed on TimeseriesPoint, for richer charts
                 "storage_utilisation": row["storage_utilisation"],
                 "production_t": row["production_t"],
                 "collected_t": row["collected_t"],
             }
         )
     return rows
+
+
+def _numeric_only(metrics: dict[str, Any]) -> dict[str, float]:
+    """Drop anything the contract's `dict[str, NumericValue]` cannot hold.
+
+    `payback_years` is None when payback is not meaningful, and `payback_status`
+    is a string; both are moved into `metadata` instead of being forced into a
+    numeric field or, worse, rendered as a nonsense number.
+    """
+    return {
+        key: value
+        for key, value in metrics.items()
+        if key not in NON_NUMERIC_METRICS and isinstance(value, (int, float))
+    }
 
 
 def _result_metrics(block: dict[str, Any]) -> dict[str, Any]:
@@ -208,11 +303,12 @@ def _result_metrics(block: dict[str, Any]) -> dict[str, Any]:
                 "incremental_annual_cost_gbp": fin["annual_opex_delta_gbp"],
                 "net_annual_benefit_gbp": fin["net_annual_benefit_gbp"],
                 "annual_value_gbp": fin["annual_value_gbp"],
-                "payback_years": fin["payback_years"],
-                "payback_status": fin["payback_status"],
+                "recovered_output_t_per_year": fin["recovered_output_t_per_year"],
             }
         )
-    return metrics
+        if fin["payback_years"] is not None:
+            metrics["payback_years"] = fin["payback_years"]
+    return _numeric_only(metrics)
 
 
 def _block_to_entry(block: dict[str, Any], is_baseline: bool = False) -> dict[str, Any]:
@@ -225,22 +321,43 @@ def _block_to_entry(block: dict[str, Any], is_baseline: bool = False) -> dict[st
             "error": block["error"],
         }
         if not is_baseline:
-            entry["parameter_overrides"] = block.get("overrides", {})
+            entry["parameter_overrides"] = block.get("parameter_overrides") or block.get(
+                "overrides"
+            ) or None
         return entry
+
+    run = block.get("representative_run")
+    metadata: dict[str, Any] = {
+        "config": block.get("config"),
+        "stats": block.get("stats"),
+        "failure_probability": block.get("failure_probability"),
+    }
+    if block.get("financial"):
+        metadata["financial"] = block["financial"]
+    if block.get("economics"):
+        metadata["economics"] = block["economics"]
+    if block.get("sandbox_id"):
+        metadata["sandbox_id"] = block["sandbox_id"]
+    if run:
+        metadata["representative_run_seed"] = run.get("seed")
+        metadata["representative_run_metrics"] = run.get("metrics")
 
     entry = {
         "id": block["name"],
         "label": block["label"],
         "status": STATUS_COMPLETED,
         "result": {
-            "timeseries": to_frontend_timeseries(block.get("representative_run")),
+            "timeseries": to_frontend_timeseries(run),
             "metrics": _result_metrics(block),
-            "events": (block.get("representative_run") or {}).get("events", []),
+            "events": to_contract_events((run or {}).get("events")),
+            "metadata": metadata,
         },
         "error": None,
     }
     if not is_baseline:
-        entry["parameter_overrides"] = block.get("overrides", {})
+        entry["parameter_overrides"] = (
+            block.get("parameter_overrides") or block.get("overrides") or None
+        )
     return entry
 
 
@@ -256,94 +373,113 @@ def _metric_delta(before: float, after: float, unit: str) -> dict[str, Any]:
     }
 
 
-def to_comparison_response(comparison: dict[str, Any]) -> dict[str, Any]:
-    """Reshape a decision payload into the frontend's scenario-comparison shape.
+def _recommendation_for(block: dict[str, Any], comparison: dict[str, Any]) -> dict[str, Any]:
+    op, fin = block["operational"], block["financial"]
+    financials = _numeric_only(
+        {
+            "capex_gbp": fin["capex_gbp"],
+            "annual_benefit_gbp": fin["annualised_benefit_gbp"],
+            "incremental_annual_cost_gbp": fin["annual_opex_delta_gbp"],
+            "net_annual_benefit_gbp": fin["net_annual_benefit_gbp"],
+            "annual_value_gbp": fin["annual_value_gbp"],
+            **({"payback_years": fin["payback_years"]}
+               if fin["payback_years"] is not None else {}),
+        }
+    )
+    return {
+        "scenario_id": block["name"],
+        "title": block["label"],
+        "summary": comparison["recommendation"]["note"],
+        "metric_deltas": {
+            "lost_production_t": _metric_delta(
+                op["baseline_expected_lost_production_t"],
+                op["expected_lost_production_t"],
+                "tonnes",
+            ),
+            "p95_lost_production_t": _metric_delta(
+                op["baseline_p95_lost_production_t"],
+                op["p95_lost_production_t"],
+                "tonnes",
+            ),
+            "failure_probability": _metric_delta(
+                op["baseline_failure_probability"],
+                op["failure_probability"],
+                "fraction",
+            ),
+        },
+        "financials": financials,
+    }
 
-    Adds `assumptions` and `execution` on top of the contract, because the UI is
-    meant to show what was assumed and where the code ran. Everything the
-    fixture declares keeps its name and meaning.
+
+def to_comparison_response(comparison: dict[str, Any]) -> dict[str, Any]:
+    """Reshape a decision payload into a contract-valid `ScenarioComparison`.
+
+    The response carries exactly the three fields the contract allows. The
+    ranking, assumptions, execution metadata and - when no intervention pays for
+    itself - the explanation of *why* nothing is recommended, all travel in the
+    baseline result's `metadata`, which is the contract's free-form field.
+
+    `recommendation` is `None` when no scenario has positive annual value. That
+    is the honest answer and the contract permits it; the rejected best option is
+    still described in the baseline metadata so the UI has numbers to show.
     """
-    baseline_block = comparison["baseline"]
     entries = [_block_to_entry(b) for b in comparison["scenarios"]]
+    completed_ids = {e["id"] for e in entries if e["status"] == STATUS_COMPLETED}
 
     winner_id = comparison["recommendation"].get("decision")
     winner = next(
         (b for b in comparison["scenarios"]
-         if b["name"] == winner_id and b.get("status") != STATUS_FAILED),
+         if b["name"] == winner_id and b["name"] in completed_ids),
         None,
     )
 
-    # When nothing pays for itself the honest answer is "recommend nothing", but
-    # the UI still needs numbers to explain *why*. So scenario_id stays null and
-    # the deltas describe the best-ranked option, named by rejected_scenario_id.
-    rejected: dict[str, Any] | None = None
+    rejected = None
     if winner is None and comparison["ranking"]:
         best_name = comparison["ranking"][0]["name"]
         rejected = next(
-            (b for b in comparison["scenarios"]
-             if b["name"] == best_name and b.get("status") != STATUS_FAILED),
-            None,
+            (b for b in comparison["scenarios"] if b["name"] == best_name), None
         )
 
-    subject = winner or rejected
-    if subject is None:
-        recommendation = {
-            "scenario_id": None,
-            "title": comparison["recommendation"].get("label", "No intervention pays for itself"),
-            "summary": comparison["recommendation"].get("note", ""),
-            "metric_deltas": {},
-            "financials": {},
-            "rule": comparison["recommendation"]["rule"],
+    recommendation = _recommendation_for(winner, comparison) if winner else None
+
+    baseline_entry = _block_to_entry(comparison["baseline"], is_baseline=True)
+    baseline_entry["result"]["metadata"].update(
+        {
+            "ranking": comparison["ranking"],
+            "ranking_rule": comparison["recommendation"]["rule"],
+            "assumptions": comparison["assumptions"],
+            "execution": comparison.get("execution", {}),
+            "runtime_seconds": comparison.get("runtime_seconds"),
+            "decision": comparison["recommendation"].get("decision"),
         }
-    else:
-        op, fin = subject["operational"], subject["financial"]
-        recommendation = {
-            "scenario_id": subject["name"] if winner else None,
-            "rejected_scenario_id": None if winner else subject["name"],
-            "title": subject["label"] if winner else "No intervention pays for itself",
-            "summary": (
-                comparison["recommendation"]["note"] if winner
-                else f"{subject['label']} is the best-ranked option but its annual "
-                     f"value is negative, so the recommendation is to do nothing."
+    )
+    if recommendation is None:
+        baseline_entry["result"]["metadata"]["no_viable_intervention"] = {
+            "reason": "no scenario has a positive annual value",
+            "rejected_scenario_id": rejected["name"] if rejected else None,
+            "rejected_annual_value_gbp": (
+                rejected["financial"]["annual_value_gbp"] if rejected else None
             ),
-            "metric_deltas": {
-                "lost_production_t": _metric_delta(
-                    op["baseline_expected_lost_production_t"],
-                    op["expected_lost_production_t"],
-                    "tonnes",
-                ),
-                "p95_lost_production_t": _metric_delta(
-                    op["baseline_p95_lost_production_t"],
-                    op["p95_lost_production_t"],
-                    "tonnes",
-                ),
-                "failure_probability": _metric_delta(
-                    op["baseline_failure_probability"],
-                    op["failure_probability"],
-                    "fraction",
-                ),
-            },
-            "financials": {
-                "capex_gbp": fin["capex_gbp"],
-                "annual_benefit_gbp": fin["annualised_benefit_gbp"],
-                "incremental_annual_cost_gbp": fin["annual_opex_delta_gbp"],
-                "net_annual_benefit_gbp": fin["net_annual_benefit_gbp"],
-                "annual_value_gbp": fin["annual_value_gbp"],
-                "payback_years": fin["payback_years"],
-                "payback_status": fin["payback_status"],
-            },
-            "rule": comparison["recommendation"]["rule"],
+            "detail": _recommendation_for(rejected, comparison) if rejected else None,
         }
 
     return {
-        "baseline": _block_to_entry(baseline_block, is_baseline=True),
+        "baseline": baseline_entry,
         "scenarios": entries,
-        "ranking": comparison["ranking"],
         "recommendation": recommendation,
-        "assumptions": comparison["assumptions"],
-        "execution": comparison.get("execution", {}),
-        "runtime_seconds": comparison.get("runtime_seconds"),
     }
+
+
+def validate_contract_response(response: dict[str, Any]) -> Any:
+    """Validate a response against `app/models.py`, raising if it does not fit.
+
+    Kept as an explicit call rather than done automatically, so the simulation
+    layer never depends on pydantic at runtime - but the tests, and any API
+    layer, can assert the contract holds.
+    """
+    from app.models import ScenarioComparison
+
+    return ScenarioComparison.model_validate(response)
 
 
 # ---------------------------------------------------------------------------
@@ -377,13 +513,53 @@ def run_scenario_comparison(request: dict[str, Any]) -> dict[str, Any]:
         include_representative_run=True,
         tolerate_failures=True,
     )
+    # carry the caller's original override names onto the blocks for echoing back
+    original = {s["name"]: s.get("parameter_overrides") for s in scenarios}
+    for block in comparison["scenarios"]:
+        if original.get(block["name"]):
+            block["parameter_overrides"] = original[block["name"]]
+
     response = to_comparison_response(comparison)
-    response["assumptions"]["unmapped_model_spec_parameters"] = unmapped_parameters(
-        model_spec
+    response["baseline"]["result"]["metadata"]["unmapped_model_spec_parameters"] = (
+        unmapped_parameters(model_spec)
     )
     return response
 
 
 def run_baseline(request: dict[str, Any]) -> dict[str, Any]:
-    """Execute a `baseline-request`: the baseline only, no interventions."""
-    return run_scenario_comparison({**request, "scenarios": []})
+    """Execute a `baseline-request`: the baseline only, no interventions.
+
+    Returns a `SimulationResult`, not a `ScenarioComparison` - the contract
+    requires a comparison to hold at least one scenario, and a baseline run has
+    none by definition.
+    """
+    model_spec = request.get("model_spec")
+    comparison = run_decision_pipeline(
+        base_config=model_spec_to_config(model_spec),
+        scenarios=[],
+        n_runs=int(request.get("rollout_count") or DEFAULT_N_RUNS),
+        base_seed=int(request.get("seed") if request.get("seed") is not None
+                      else DEFAULT_BASE_SEED),
+        execution=request.get("execution", "auto"),
+        finance_config=model_spec_to_finance_config(model_spec) or None,
+        include_representative_run=True,
+        tolerate_failures=True,
+    )
+    entry = _block_to_entry(comparison["baseline"], is_baseline=True)
+    result = entry["result"]
+    result["metadata"].update(
+        {
+            "assumptions": comparison["assumptions"],
+            "execution": comparison.get("execution", {}),
+            "runtime_seconds": comparison.get("runtime_seconds"),
+            "unmapped_model_spec_parameters": unmapped_parameters(model_spec),
+        }
+    )
+    return result
+
+
+def validate_baseline_result(result: dict[str, Any]) -> Any:
+    """Validate a baseline result against `app/models.py`."""
+    from app.models import SimulationResult
+
+    return SimulationResult.model_validate(result)

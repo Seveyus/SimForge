@@ -26,9 +26,11 @@ from app.api_contract import (
     to_frontend_timeseries,
     unmapped_parameters,
 )
+from app.api_contract import validate_baseline_result, validate_contract_response
 from app.scenario_runner import STATUS_COMPLETED, STATUS_FAILED
 
-FIXTURES = Path(__file__).parent / "fixtures"
+# The teammate's fixtures are the source of truth for the contract shape.
+FIXTURES = Path(__file__).parent.parent / "static" / "fixtures"
 
 
 def fixture(name: str) -> dict:
@@ -165,11 +167,14 @@ def test_a_baseline_that_never_fails_recommends_nothing_but_still_explains():
     request["model_spec"]["time"]["simulation_days"] = 10
     response = run_scenario_comparison(request)
     assert response["baseline"]["result"]["metrics"]["lost_production_t"] == 0.0
-    rec = response["recommendation"]
-    assert rec["scenario_id"] is None                  # honest: recommend nothing
-    assert rec["rejected_scenario_id"] in {e["id"] for e in response["scenarios"]}
-    assert rec["metric_deltas"], "the UI still needs numbers to explain the rejection"
-    assert rec["financials"]["annual_value_gbp"] < 0
+    # The contract requires a recommendation to name a *completed* scenario, so
+    # "recommend nothing" is expressed as a null recommendation, not a fake one.
+    assert response["recommendation"] is None
+    explain = response["baseline"]["result"]["metadata"]["no_viable_intervention"]
+    assert explain["rejected_scenario_id"] in {e["id"] for e in response["scenarios"]}
+    assert explain["rejected_annual_value_gbp"] < 0
+    assert explain["detail"]["metric_deltas"], "the UI still needs numbers to show"
+    validate_contract_response(response)
 
 
 def test_response_matches_the_fixture_top_level_shape(response):
@@ -200,20 +205,46 @@ def test_every_metric_the_fixture_declares_is_present(response):
     expected_baseline = fixture("scenario-comparison")["baseline"]["result"]["metrics"]
     assert set(expected_baseline) <= set(response["baseline"]["result"]["metrics"])
 
-    fixture_scenarios = fixture("scenario-comparison")["scenarios"]
+    # `payback_years` is the one fixture metric we cannot always supply: metrics
+    # is dict[str, NumericValue], and payback is None when it is not meaningful.
     declared: set[str] = set()
-    for s in fixture_scenarios:
+    for s in fixture("scenario-comparison")["scenarios"]:
         if s["result"]:
             declared |= set(s["result"]["metrics"])
+    declared -= {"payback_years"}
     for entry in response["scenarios"]:
         if entry["status"] == STATUS_COMPLETED:
             assert declared <= set(entry["result"]["metrics"])
 
 
+def test_metrics_are_all_finite_numbers(response):
+    """SimulationResult.metrics is dict[str, NumericValue] - no strings, no None."""
+    import math
+
+    entries = [response["baseline"]] + response["scenarios"]
+    for entry in entries:
+        if entry["status"] != STATUS_COMPLETED:
+            continue
+        for key, value in entry["result"]["metrics"].items():
+            assert isinstance(value, (int, float)) and not isinstance(value, bool), key
+            assert math.isfinite(value), key
+
+
+def test_payback_status_is_available_even_though_it_is_not_a_metric(response):
+    """It is a string, so it lives in metadata rather than being forced numeric."""
+    for entry in response["scenarios"]:
+        if entry["status"] == STATUS_COMPLETED:
+            assert entry["result"]["metadata"]["financial"]["payback_status"]
+
+
 def test_recommendation_matches_the_fixture_shape(response):
     expected = fixture("scenario-comparison")["recommendation"]
     rec = response["recommendation"]
-    assert set(expected) <= set(rec)
+    assert rec is not None
+    assert set(rec) <= set(expected), "ScenarioComparison forbids extra fields"
+    assert set(expected) - {"summary"} <= set(rec) or set(rec) >= {
+        "scenario_id", "title", "summary", "metric_deltas", "financials"
+    }
     assert set(expected["metric_deltas"]) <= set(rec["metric_deltas"])
     for delta in rec["metric_deltas"].values():
         assert set(delta) == {"baseline", "scenario", "absolute_change",
@@ -255,10 +286,15 @@ def test_response_is_json_serialisable(response):
     json.loads(json.dumps(response))
 
 
-def test_assumptions_and_execution_are_exposed(response):
-    assert response["assumptions"]["ranking_rule"]
-    assert response["assumptions"]["unmapped_model_spec_parameters"] == []
-    assert response["execution"]["mode"] == "local"
+def test_assumptions_and_execution_travel_in_baseline_metadata(response):
+    """ScenarioComparison forbids extra fields, so the richer detail rides in
+    SimulationResult.metadata - the contract's one free-form field."""
+    meta = response["baseline"]["result"]["metadata"]
+    assert meta["assumptions"]["ranking_rule"]
+    assert meta["unmapped_model_spec_parameters"] == []
+    assert meta["execution"]["mode"] == "local"
+    assert meta["ranking"]
+    assert meta["runtime_seconds"] > 0
 
 
 # --------------------------------------------------------------------------
@@ -288,25 +324,30 @@ def test_a_failing_scenario_is_reported_not_fatal(monkeypatch):
     assert "sandbox vanished" in failed[0]["error"]["message"]
 
     # the rest still produced a decision, and the failure is not ranked
-    assert response["recommendation"]["scenario_id"] is not None
-    assert "increase-collections" not in {r["name"] for r in response["ranking"]}
-    assert len(response["ranking"]) == 2
+    assert response["recommendation"] is not None
+    ranking = response["baseline"]["result"]["metadata"]["ranking"]
+    assert "increase-collections" not in {r["name"] for r in ranking}
+    assert len(ranking) == 2
+    validate_contract_response(response)
 
 
 def test_baseline_request_runs_without_scenarios():
     request = fixture("baseline-request")
     request.update(rollout_count=10, execution="local")
     request["model_spec"]["time"]["simulation_days"] = 5
-    response = run_baseline(request)
-    assert response["baseline"]["status"] == STATUS_COMPLETED
-    assert response["scenarios"] == []
-    assert response["recommendation"]["scenario_id"] is None
+    result = run_baseline(request)
+    # A baseline run returns a SimulationResult: ScenarioComparison requires at
+    # least one scenario, and a baseline has none by definition.
+    assert set(result) == {"timeseries", "metrics", "events", "metadata"}
+    assert result["metrics"]["total_production_t"] > 0
+    validate_baseline_result(result)
 
 
 def test_seed_and_rollout_count_from_the_request_are_honoured():
     response = run_scenario_comparison(stressed_request(seed=42, rollout_count=15))
-    assert response["assumptions"]["base_seed"] == 42
-    assert response["assumptions"]["n_runs"] == 15
+    assumptions = response["baseline"]["result"]["metadata"]["assumptions"]
+    assert assumptions["base_seed"] == 42
+    assert assumptions["n_runs"] == 15
 
 
 def test_the_same_request_gives_the_same_response():
@@ -314,4 +355,85 @@ def test_the_same_request_gives_the_same_response():
     a = run_scenario_comparison(request)
     b = run_scenario_comparison(request)
     assert a["recommendation"] == b["recommendation"]
-    assert a["ranking"] == b["ranking"]
+    assert (a["baseline"]["result"]["metadata"]["ranking"]
+            == b["baseline"]["result"]["metadata"]["ranking"])
+
+
+# --------------------------------------------------------------------------
+# The contract actually validates against app/models.py
+#
+# This is the test that matters for integration: not "does my dict look right"
+# but "does the teammate's own pydantic model accept it".
+# --------------------------------------------------------------------------
+
+def test_response_validates_against_the_pydantic_contract(response):
+    parsed = validate_contract_response(response)
+    assert parsed.baseline.status.value == STATUS_COMPLETED
+    assert len(parsed.scenarios) == 3
+
+
+def test_recommendation_references_a_completed_scenario(response):
+    parsed = validate_contract_response(response)
+    completed = {s.id for s in parsed.scenarios if s.status.value == STATUS_COMPLETED}
+    assert parsed.recommendation.scenario_id in completed
+
+
+def test_events_carry_a_label_and_severity(response):
+    events = response["baseline"]["result"]["events"]
+    assert events
+    for event in events:
+        assert set(event) == {"time_hours", "type", "label", "severity", "details"}
+        assert event["severity"] in ("info", "warning", "critical")
+        assert event["label"]
+
+
+def test_curtailment_events_are_critical():
+    from app.api_contract import to_contract_events
+
+    events = to_contract_events([
+        {"t_hours": 5.0, "type": "production_curtailed", "duration_hours": 3.0,
+         "lost_production_t": 2.5},
+        {"t_hours": 1.0, "type": "collection_completed", "collected_t": 24.0},
+    ])
+    assert events[0]["severity"] == "critical"
+    assert "2.5 t lost" in events[0]["label"]
+    assert events[1]["severity"] == "info"
+
+
+def test_an_unknown_event_type_still_gets_a_label():
+    from app.api_contract import to_contract_events
+
+    event = to_contract_events([{"t_hours": 1.0, "type": "new_thing"}])[0]
+    assert event["label"] and event["severity"] == "info"
+
+
+def test_timeseries_times_are_unique_and_ascending(response):
+    """SimulationResult enforces this."""
+    times = [r["time_hours"] for r in response["baseline"]["result"]["timeseries"]]
+    assert times == sorted(times)
+    assert len(times) == len(set(times))
+
+
+def test_parameter_overrides_are_echoed_in_the_callers_own_names(response):
+    """The caller sent `tanker_capacity`; it should not get back `tanker_capacity_t`."""
+    by_id = {e["id"]: e for e in response["scenarios"]}
+    assert by_id["larger-tanker"]["parameter_overrides"] == {"tanker_capacity": 40}
+    assert by_id["add-third-tank"]["parameter_overrides"] == {"tank_count": 3}
+
+
+def test_a_failed_scenario_still_validates(monkeypatch):
+    import app.scenario_runner as sr
+
+    real = sr.run_scenario_monte_carlo
+
+    def flaky(base_config, scenario, **kwargs):
+        if scenario["name"] == "larger-tanker":
+            raise RuntimeError("sandbox vanished")
+        return real(base_config, scenario, **kwargs)
+
+    monkeypatch.setattr(sr, "run_scenario_monte_carlo", flaky)
+    response = run_scenario_comparison(stressed_request(rollout_count=10))
+    parsed = validate_contract_response(response)
+    failed = [s for s in parsed.scenarios if s.status.value == STATUS_FAILED]
+    assert len(failed) == 1
+    assert failed[0].error.retryable is True

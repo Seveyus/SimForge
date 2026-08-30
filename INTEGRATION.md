@@ -22,6 +22,47 @@ response = run_scenario_comparison({
 })
 ```
 
+**The output validates against `app/models.py`.** `validate_contract_response()`
+runs your own pydantic models over it, and a test asserts it on every response,
+so the wiring cannot break silently:
+
+```python
+from app.api_contract import validate_contract_response
+comparison = validate_contract_response(response)   # -> ScenarioComparison
+```
+
+`ContractModel` forbids extra fields, so the response carries exactly
+`baseline` / `scenarios` / `recommendation`. Everything richer travels in
+`SimulationResult.metadata` — the contract's one free-form field:
+
+```python
+meta = response["baseline"]["result"]["metadata"]
+meta["ranking"]            # ranked interventions + the rule
+meta["assumptions"]        # n_runs, seed, ranking rule, failure definition, finance config
+meta["execution"]          # mode, isolation_mode, sandbox ids, timings
+meta["no_viable_intervention"]   # only when recommendation is null
+```
+
+Per scenario, `result.metadata` carries `financial` (including
+`payback_status`), `stats`, `economics` and `sandbox_id`.
+
+Three contract details worth knowing:
+
+* `metrics` is `dict[str, NumericValue]`, so `payback_status` (a string) and
+  `payback_years` (`None` when payback is not meaningful) are **not** metrics.
+  `payback_years` appears only when it is a real number; the status is in
+  `metadata.financial`. Nothing is coerced into a fake number to fit.
+* A `Recommendation` must name a *completed* scenario, so when no intervention
+  has positive annual value the response sets `recommendation: null` and puts
+  the rejected best option, with full deltas, in
+  `metadata.no_viable_intervention`.
+* `run_baseline()` returns a `SimulationResult`, not a `ScenarioComparison` —
+  the latter requires at least one scenario, and a baseline has none.
+
+Events are emitted in your schema — `{time_hours, type, label, severity,
+details}` — with severities assigned by kind: curtailment and a full tank are
+`critical`, missed and delayed collections are `warning`, the rest `info`.
+
 It handles the naming gap between the two sides:
 
 | ModelSpec / overrides | simulator config |
