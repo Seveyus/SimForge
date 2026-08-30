@@ -88,6 +88,10 @@ Never overwrite unrelated work in a dirty worktree.
 Additional fields must be optional or explicitly agreed. Do not rename or remove
 these top-level fields.
 
+The exact M0 route proposal, error envelope and contract fixtures live in
+`static/fixtures/README.md`. Build against those examples until an accepted
+version records any changes from the integration teammate.
+
 ## Implementation Order
 
 Follow the milestone gates in `plan.md`:

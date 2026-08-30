@@ -1,0 +1,24 @@
+{
+  "labels": [
+    {
+      "source": "user",
+      "display_label": "USER",
+      "description": "Explicitly supplied by the operator."
+    },
+    {
+      "source": "researched",
+      "display_label": "RESEARCHED",
+      "description": "Obtained from an external source with a retained citation."
+    },
+    {
+      "source": "estimated",
+      "display_label": "ESTIMATED",
+      "description": "Derived from available information."
+    },
+    {
+      "source": "assumption",
+      "display_label": "ASSUMPTION",
+      "description": "Introduced explicitly to make the initial model executable."
+    }
+  ]
+}

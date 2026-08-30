@@ -233,13 +233,23 @@ Official references:
 
 ### M0 — Freeze the handoff contract
 
+Status: contract v0.1 is frozen on `ebrahim-work`; teammate sign-off remains.
+
+Artifacts:
+
+- [`static/fixtures/README.md`](static/fixtures/README.md) defines proposed API
+  routes, payload rules, partial-scenario behaviour and the shared error shape.
+- `static/fixtures/*.json` contains contract-conforming requests and responses
+  for requirements, baseline simulation, scenario comparison and errors.
+
 Deliverables:
 
-- Confirm required `ModelSpec` fields and parameter envelope with the simulation
+- [ ] Confirm required `ModelSpec` fields and parameter envelope with the simulation
   teammate.
-- Confirm the exact baseline, scenario and recommendation payload examples.
-- Agree API route names and error response shape before wiring the UI.
-- Create representative fixture payloads for frontend development.
+- [x] Define exact baseline, scenario and recommendation payload examples.
+- [ ] Agree proposed API route names and error response shape with the integration
+  teammate before wiring production fetch calls.
+- [x] Create representative fixture payloads for frontend development.
 
 Exit gate:
 

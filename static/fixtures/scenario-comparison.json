@@ -1,0 +1,110 @@
+{
+  "baseline": {
+    "id": "baseline",
+    "label": "Baseline",
+    "status": "completed",
+    "result": {
+      "timeseries": [],
+      "metrics": {
+        "total_production_t": 720,
+        "lost_production_t": 42,
+        "tank_utilisation": 0.81,
+        "overflow_events": 3,
+        "failure_probability": 0.43,
+        "p95_lost_production_t": 68
+      },
+      "events": []
+    },
+    "error": null
+  },
+  "scenarios": [
+    {
+      "id": "add-third-tank",
+      "label": "Add a third storage tank",
+      "status": "completed",
+      "parameter_overrides": {
+        "tank_count": 3
+      },
+      "result": {
+        "timeseries": [],
+        "metrics": {
+          "total_production_t": 720,
+          "lost_production_t": 14,
+          "tank_utilisation": 0.62,
+          "overflow_events": 1,
+          "failure_probability": 0.16,
+          "p95_lost_production_t": 31,
+          "capex_gbp": 80000,
+          "annual_benefit_gbp": 340667,
+          "payback_years": 0.23
+        },
+        "events": []
+      },
+      "error": null
+    },
+    {
+      "id": "increase-collections",
+      "label": "Increase collections to twice daily",
+      "status": "completed",
+      "parameter_overrides": {
+        "collections_per_day": 2
+      },
+      "result": {
+        "timeseries": [],
+        "metrics": {
+          "total_production_t": 720,
+          "lost_production_t": 7,
+          "tank_utilisation": 0.54,
+          "overflow_events": 0,
+          "failure_probability": 0.07,
+          "p95_lost_production_t": 18,
+          "incremental_annual_cost_gbp": 95000,
+          "annual_benefit_gbp": 425833,
+          "net_annual_benefit_gbp": 330833
+        },
+        "events": []
+      },
+      "error": null
+    },
+    {
+      "id": "larger-tanker",
+      "label": "Use a larger tanker",
+      "status": "failed",
+      "parameter_overrides": {
+        "tanker_capacity": 40
+      },
+      "result": null,
+      "error": {
+        "code": "simulation_failed",
+        "message": "This scenario could not be completed.",
+        "retryable": true
+      }
+    }
+  ],
+  "recommendation": {
+    "scenario_id": "increase-collections",
+    "title": "Increase collection frequency",
+    "summary": "This completed scenario has the lowest expected lost production and strongest downside protection among the successful runs.",
+    "metric_deltas": {
+      "lost_production_t": {
+        "baseline": 42,
+        "scenario": 7,
+        "absolute_change": -35,
+        "percentage_change": -83.33,
+        "unit": "tonnes"
+      },
+      "failure_probability": {
+        "baseline": 0.43,
+        "scenario": 0.07,
+        "absolute_change": -0.36,
+        "percentage_change": -83.72,
+        "unit": "fraction"
+      }
+    },
+    "financials": {
+      "annual_benefit_gbp": 425833,
+      "incremental_annual_cost_gbp": 95000,
+      "net_annual_benefit_gbp": 330833
+    }
+  }
+}
