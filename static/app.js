@@ -51,6 +51,7 @@ const state = {
   baselineResult: null,
   baselineError: null,
   lastBaselinePayload: null,
+  hiddenChartSeries: new Set(),
   comparisonPhase: "locked",
   comparisonResult: null,
   comparisonError: null,
@@ -404,6 +405,7 @@ async function runBaseline(payload) {
   state.baselinePhase = "loading";
   state.baselineError = null;
   state.lastBaselinePayload = deepClone(payload);
+  state.hiddenChartSeries = new Set();
   render();
 
   try {
@@ -1026,14 +1028,35 @@ function renderChart(points, events) {
   clear(elements.storageChart);
   clear(elements.chartLegend);
   elements.chartTooltip.hidden = true;
-  const seriesKeys = seriesKeysFor(points);
-  const hasChart = points.length > 0 && seriesKeys.length > 0;
+  const allSeriesKeys = seriesKeysFor(points);
+  const hasChart = points.length > 0 && allSeriesKeys.length > 0;
   elements.chartEmpty.hidden = hasChart;
   elements.chartFrame.hidden = !hasChart;
+  elements.chartLegend.hidden = !hasChart;
   elements.timeseriesTableDisclosure.hidden = !hasChart;
 
   if (!hasChart) {
     elements.chartKeyboardSummary.textContent = "";
+    return;
+  }
+
+  allSeriesKeys.forEach((key, seriesIndex) => {
+    const visible = !state.hiddenChartSeries.has(key);
+    const label = `${humanise(key)}${presentationUnit(key) ? ` (${presentationUnit(key)})` : ""}`;
+    const legendItem = createElement("button", `legend-item series-${seriesIndex % 6}${visible ? "" : " is-hidden"}`);
+    legendItem.type = "button";
+    legendItem.dataset.chartSeries = key;
+    legendItem.setAttribute("aria-pressed", String(visible));
+    legendItem.setAttribute("aria-label", `${visible ? "Hide" : "Show"} ${label}`);
+    legendItem.append(createElement("span", "legend-swatch"), document.createTextNode(label));
+    elements.chartLegend.append(legendItem);
+  });
+
+  renderTimeseriesTable(points, allSeriesKeys);
+  const seriesKeys = allSeriesKeys.filter((key) => !state.hiddenChartSeries.has(key));
+  if (!seriesKeys.length) {
+    elements.storageChart.append(createElement("p", "chart-selection-empty", "No series selected. Choose a series above to add it to the chart."));
+    elements.chartKeyboardSummary.textContent = "No time-series lines are selected. The complete data table remains available below.";
     return;
   }
 
@@ -1151,7 +1174,8 @@ function renderChart(points, events) {
     svg.append(marker);
   }
 
-  seriesKeys.forEach((key, seriesIndex) => {
+  seriesKeys.forEach((key) => {
+    const seriesIndex = allSeriesKeys.indexOf(key);
     const availablePoints = points.filter((point) => point[key] !== undefined);
     const pathData = availablePoints
       .map((point, index) => `${index === 0 ? "M" : "L"} ${x(point.time_hours)} ${y(point[key])}`)
@@ -1180,16 +1204,10 @@ function renderChart(points, events) {
       svg.append(circle);
     }
 
-    const legendItem = createElement("span", `legend-item series-${seriesIndex % 6}`);
-    legendItem.append(createElement("span", "legend-swatch"));
-    const unit = presentationUnit(key);
-    legendItem.append(document.createTextNode(`${humanise(key)}${unit ? ` (${unit})` : ""}`));
-    elements.chartLegend.append(legendItem);
   });
 
   elements.storageChart.append(svg);
-  renderTimeseriesTable(points, seriesKeys);
-  elements.chartKeyboardSummary.textContent = `${points.length} time points from ${formatNumber(minTime)} to ${formatNumber(maxTime)} hours. Values range from ${formatNumber(minValue)} to ${formatNumber(maxValue)}; use the data table for exact values.`;
+  elements.chartKeyboardSummary.textContent = `${seriesKeys.length} of ${allSeriesKeys.length} series shown across ${points.length} time points from ${formatNumber(minTime)} to ${formatNumber(maxTime)} hours. Visible values range from ${formatNumber(minValue)} to ${formatNumber(maxValue)}; use the data table for exact values.`;
 }
 
 function renderEvents(events) {
@@ -1601,6 +1619,7 @@ function resetWorkspace({ preserveDescription = false } = {}) {
     baselineResult: null,
     baselineError: null,
     lastBaselinePayload: null,
+    hiddenChartSeries: new Set(),
     comparisonPhase: "locked",
     comparisonResult: null,
     comparisonError: null,
@@ -1792,6 +1811,15 @@ elements.runBaseline.addEventListener("click", () => {
 
 elements.retryBaseline.addEventListener("click", () => {
   if (state.lastBaselinePayload) runBaseline(state.lastBaselinePayload);
+});
+
+elements.chartLegend.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-chart-series]");
+  if (!button || !state.baselineResult) return;
+  const key = button.dataset.chartSeries;
+  if (state.hiddenChartSeries.has(key)) state.hiddenChartSeries.delete(key);
+  else state.hiddenChartSeries.add(key);
+  renderChart(state.baselineResult.timeseries, state.baselineResult.events);
 });
 
 elements.runComparison.addEventListener("click", () => {
