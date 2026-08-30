@@ -7,6 +7,9 @@ not assumed. Read the **Demo runbook** first; the rest is reference.
 
 ## Demo runbook
 
+Requires Python 3.10 or newer. macOS's system Python 3.9 cannot install the
+pinned FastAPI, Daytona or pytest versions.
+
 ```bash
 pip install -r requirements.txt
 cp .env.example .env          # fill in DAYTONA_API_KEY (+ GEMINI_API_KEY, GEMINI_MODEL)
