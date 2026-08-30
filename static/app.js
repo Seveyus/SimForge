@@ -45,7 +45,9 @@ const MODE_COPY = Object.freeze({
 });
 
 const state = {
-  mode: new URLSearchParams(window.location.search).get("mode") === "live" ? "live" : "mock",
+  // Live by default: the pitch is that the simulator owns the numbers, so the
+  // demo must never open on fixtures. ?mode=mock is still there for offline work.
+  mode: new URLSearchParams(window.location.search).get("mode") === "mock" ? "mock" : "live",
   phase: "idle",
   busy: false,
   description: "",
@@ -127,6 +129,11 @@ const elements = {
   eventsEmpty: document.querySelector("#events-empty"),
   comparisonStatus: document.querySelector("#comparison-status"),
   comparisonMetadata: document.querySelector("#comparison-metadata"),
+  executionPanel: document.querySelector("#execution-panel"),
+  executionBadge: document.querySelector("#execution-badge"),
+  executionExplainer: document.querySelector("#execution-explainer"),
+  executionGrid: document.querySelector("#execution-grid"),
+  executionNote: document.querySelector("#execution-note"),
   comparisonEmpty: document.querySelector("#comparison-empty"),
   scenarioPlan: document.querySelector("#scenario-plan"),
   comparisonEmptyTitle: document.querySelector("#comparison-empty-title"),
@@ -1344,6 +1351,72 @@ function renderFailedScenarios(scenarios) {
   }
 }
 
+
+// The backend reports where it executed in baseline.result.metadata.execution.
+// Surfacing it matters: the isolation claim is only credible if you can see the
+// sandbox ids the run actually used.
+function renderExecution(baseline, scenarios) {
+  const panel = elements.executionPanel;
+  if (!panel) return;
+  const meta = baseline?.result?.metadata ?? {};
+  const execution = meta.execution ?? {};
+  const mode = execution.mode;
+  if (!mode) {
+    panel.hidden = true;
+    return;
+  }
+  panel.hidden = false;
+
+  const isDaytona = mode === "daytona";
+  elements.executionBadge.textContent = isDaytona ? "Daytona" : "local process";
+  elements.executionBadge.className = `execution-badge${isDaytona ? " is-daytona" : ""}`;
+  elements.executionExplainer.textContent = isDaytona
+    ? "Each counterfactual executed in its own isolated Daytona sandbox, in parallel. Simulation code never runs in this application."
+    : "Executed in the API process. Set DAYTONA_API_KEY to run each scenario in an isolated sandbox.";
+
+  const rows = [];
+  const shortId = (id) => (typeof id === "string" ? id.slice(0, 8) : "—");
+  if (isDaytona) {
+    rows.push(["Isolation", execution.isolation_mode === "native_fork"
+      ? "native copy-on-write fork"
+      : "one sandbox per scenario"]);
+    if (execution.prebaked_snapshot) {
+      rows.push(["Snapshot", `${execution.prebaked_snapshot} — model pre-baked`]);
+    }
+    if (execution.sandbox_environment?.python) {
+      rows.push(["Sandbox runtime", `Python ${execution.sandbox_environment.python}`]);
+    }
+    rows.push(["baseline", shortId(execution.baseline_sandbox_id)]);
+    for (const run of scenarios ?? []) {
+      const id = run?.result?.metadata?.sandbox_id;
+      if (id) rows.push([run.label ?? run.id, shortId(id)]);
+    }
+    const timings = execution.timings ?? {};
+    if (typeof timings.total_s === "number") {
+      rows.push(["Execution time", `${timings.total_s.toFixed(1)} s`]);
+    }
+  }
+  const assumptions = meta.assumptions ?? {};
+  if (typeof assumptions.n_runs === "number") {
+    rows.push(["Stochastic futures", `${assumptions.n_runs} per scenario`]);
+  }
+  if (typeof assumptions.base_seed === "number") {
+    rows.push(["Seed", `${assumptions.base_seed} — reruns are identical`]);
+  }
+
+  clear(elements.executionGrid);
+  for (const [label, value] of rows) {
+    elements.executionGrid.append(
+      createElement("dt", "", label),
+      createElement("dd", "", value),
+    );
+  }
+  elements.executionNote.textContent =
+    execution.fork_unavailable_reason && execution.isolation_mode !== "native_fork"
+      ? `Native sandbox forking is unavailable here: ${execution.fork_unavailable_reason}`
+      : assumptions.common_random_numbers ?? "";
+}
+
 function renderComparison() {
   const phase = state.comparisonPhase;
   elements.comparisonEmpty.hidden = !["locked", "idle"].includes(phase);
@@ -1355,6 +1428,7 @@ function renderComparison() {
     elements.comparisonStatus.textContent = "Waiting for baseline";
     elements.comparisonStatus.className = "review-state";
     elements.comparisonMetadata.textContent = "No comparison loaded";
+    if (elements.executionPanel) elements.executionPanel.hidden = true;
     elements.comparisonEmptyTitle.textContent = "Complete the baseline first";
     elements.comparisonEmptyCopy.textContent = "Scenario comparison unlocks after a valid baseline response.";
     elements.runComparison.disabled = true;
@@ -1373,6 +1447,7 @@ function renderComparison() {
     elements.comparisonStatus.textContent = state.comparisonError?.code ?? "Error";
     elements.comparisonStatus.className = "review-state is-error";
     elements.comparisonMetadata.textContent = "No comparison loaded";
+    if (elements.executionPanel) elements.executionPanel.hidden = true;
     elements.comparisonErrorTitle.textContent = "The scenarios could not be compared";
     elements.comparisonErrorMessage.textContent = state.comparisonError?.message ?? "An unexpected comparison error occurred.";
     elements.retryComparison.hidden = state.comparisonError?.retryable === false;
@@ -1383,6 +1458,7 @@ function renderComparison() {
     elements.comparisonStatus.textContent = "Completed";
     elements.comparisonStatus.className = "review-state is-ready";
     elements.comparisonMetadata.textContent = `${completedCount} completed · ${failedCount} failed`;
+    renderExecution(baseline, scenarios);
     renderRecommendation(recommendation, scenarios);
     renderComparisonTable(baseline, scenarios, recommendation);
     renderFailedScenarios(scenarios);

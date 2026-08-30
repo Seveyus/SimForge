@@ -48,7 +48,7 @@ def test_model_spec_from_the_fixture_maps_onto_the_simulator():
     assert config["tank_count"] == 2
     assert config["tank_capacity_t"] == 45
     assert config["collections_per_day"] == 1
-    assert config["tanker_capacity_t"] == 30       # "tanker_capacity" in the spec
+    assert config["tanker_capacity_t"] == 24       # "tanker_capacity" in the spec
     assert config["missed_collection_probability"] == 0.08
     assert config["simulation_days"] == 30         # from model_spec["time"]
     assert config["timestep_minutes"] == 10
@@ -162,7 +162,9 @@ def response():
 
 def test_a_baseline_that_never_fails_recommends_nothing_but_still_explains():
     """The fixture's own numbers: nothing to recover, so nothing pays back."""
-    request = fixture("scenario-comparison-request")   # 30 t tanker
+    request = fixture("scenario-comparison-request")
+    # A generous tanker leaves so much recovery capacity that nothing is lost.
+    request["model_spec"]["parameters"]["tanker_capacity"]["value"] = 30
     request.update(rollout_count=10, execution="local")
     request["model_spec"]["time"]["simulation_days"] = 10
     response = run_scenario_comparison(request)
