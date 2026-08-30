@@ -258,16 +258,34 @@ Exit gate:
 
 ### M1 — Models and provenance
 
+Status: implemented on `ebrahim-work`; persistent tests and shared dependency
+wiring remain integration-owned.
+
+Artifacts:
+
+- `app/models.py` contains strict Pydantic v2 models for requirements,
+  `ModelSpec`, simulator results, scenario comparison and API errors.
+- `app/provenance.py` contains pure helpers for display labels, safe source
+  merging, explicit user confirmation, assumption review and provenance
+  summaries.
+
 Deliverables:
 
-- Implement Pydantic contract models in `app/models.py`.
-- Implement provenance helpers in `app/provenance.py`.
-- Cover missing values, invalid units/types, invalid time settings and source
-  display mapping in the agreed team tests.
+- [x] Implement Pydantic contract models in `app/models.py`.
+- [x] Implement provenance helpers in `app/provenance.py`.
+- [x] Validate all M0 fixtures plus missing citations, invalid units/types,
+  invalid physical values and unsafe provenance upgrades locally.
+- [ ] Add these acceptance cases to the teammate-owned `tests/` suite during
+  integration.
+
+Integration note:
+
+- Add Pydantic v2 to the shared `requirements.txt` when that integration-owned
+  file is created. No new dependency file is introduced on this branch.
 
 Exit gate:
 
-- Valid examples round-trip cleanly and malformed/high-risk input fails with a
+- [x] Valid examples round-trip cleanly and malformed/high-risk input fails with a
   useful validation error.
 
 ### M2 — Requirements agent with Gemini
