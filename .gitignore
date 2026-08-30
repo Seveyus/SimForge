@@ -5,10 +5,19 @@ __pycache__/
 .venv/
 venv/
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
-# Env / secrets
+# Local secrets and environment overrides
 .env
+.env.*
+!.env.example
 .env.local
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
 
 # Local artefacts
 *.log

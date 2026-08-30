@@ -290,13 +290,26 @@ Exit gate:
 
 ### M2 — Requirements agent with Gemini
 
+Status: implemented and live-verified on `ebrahim-work` with Gemini 3.6 Flash.
+
+Artifact:
+
+- `app/requirements_agent.py` contains the current Gemini Interactions API
+  adapter, schema-constrained CO2 extraction, deterministic completeness rules,
+  multi-turn answer merging, explicit defaults, safe provider errors and an
+  injectable fixture client.
+
 Deliverables:
 
-- Structured natural-language parameter extraction.
-- Multi-turn merge of clarification answers into a partial spec.
-- Deterministic required-field and constraint checks.
-- Clear `needs_clarification` and `ready` responses.
-- Fake-client or fixture path for offline development.
+- [x] Implement structured natural-language parameter extraction.
+- [x] Merge clarification answers into a partial spec without another provider
+  call.
+- [x] Apply deterministic required-field, unit and constraint checks.
+- [x] Return clear `needs_clarification` and `ready` states.
+- [x] Provide an injectable fixture client for offline development.
+- [x] Smoke-test live extraction and clarification using `google-genai` 2.20.0
+  and Gemini 3.6 Flash. Gemini 3.7 Flash returned a transient high-demand error,
+  which was surfaced as a retryable provider failure.
 
 Minimum CO2 clarification set:
 
@@ -310,67 +323,117 @@ Minimum CO2 clarification set:
 
 Exit gate:
 
-- The README demo description becomes a valid `ModelSpec`, while an incomplete
+- [x] The README demo description plus its tanker-capacity clarification becomes
+  a valid `ModelSpec`, while an incomplete
   description produces focused questions instead of fabricated plant facts.
 
 ### M3 — Safe simulator prompt generation
 
+Status: implemented and live-verified on `ebrahim-work` with Gemini 3.6 Flash.
+
+Artifact:
+
+- `app/simulator_generator.py` contains versioned initial/repair prompts,
+  structured Gemini source generation, deterministic ModelSpec fingerprints,
+  bounded provider retries, credential-safe error sanitisation, a one-repair
+  limit and an injectable fixture client. It returns source and metadata only.
+
 Deliverables:
 
-- Versioned generation prompt built from a validated `ModelSpec`.
-- Exact simulator signature and result contract in the prompt.
-- Reproducibility, dependency and sandbox restrictions.
-- One repair-prompt path that accepts validation/execution errors.
+- [x] Build a versioned generation prompt from a validated `ModelSpec`.
+- [x] Require the exact simulator signature and result contract.
+- [x] Require seeded reproducibility, bounded loops, allowed dependencies and
+  sandbox-safe behavior.
+- [x] Implement one sanitised repair-prompt path for validation/execution errors.
+- [x] Live-generate source with Gemini 3.6 Flash, parse its Python syntax and
+  verify its imports/signature without importing or executing it.
 
 Exit gate:
 
-- Generated output can be handed to the teammate's validator/Daytona runner
+- [x] Generated output can be handed to the teammate's validator/Daytona runner
   without this module executing it or depending on Daytona internals.
 
 ### M4 — Frontend shell and modelling flow
 
+Status: implemented locally against the M0 requirements fixtures and the shared
+requirements contract. Live mode targets `/api/requirements` without exposing a
+Gemini key or falling back to demo data; the teammate-owned API layer still needs
+to mount that route during integration.
+
+Artifacts:
+
+- `static/index.html`
+- `static/styles.css`
+- `static/app.js`
+
 Deliverables:
 
-- Operation description form.
-- Clarification question flow.
-- Loading, empty, error and retry states.
-- Assumption/provenance review before execution.
-- Responsive and keyboard-usable layout.
+- [x] Operation description form.
+- [x] Clarification question flow.
+- [x] Loading, empty, error and retry states.
+- [x] Assumption/provenance review before execution.
+- [x] Responsive and keyboard-usable layout.
 
 Exit gate:
 
-- A user can move from description to reviewed spec using mock or live contract
-  responses, with no simulator dependency.
+- [x] The fixture-backed flow moves from description through clarification to a
+  reviewed spec, while the same renderer accepts live contract responses.
+- [x] The UI has no simulator implementation dependency; approval emits a
+  contract-shaped `simforge:model-ready` event for the integration layer.
 
 ### M5 — Baseline dashboard
 
+Status: implemented in the existing static frontend. Demo mode renders the M0
+simulation fixture; live mode targets `/api/simulations/baseline` with no fixture
+fallback. Confirm or rename that centralized route when the teammate mounts the
+simulation API.
+
+Artifacts:
+
+- `static/index.html`
+- `static/styles.css`
+- `static/app.js`
+
 Deliverables:
 
-- KPI summary cards sourced only from `metrics`.
-- Tank/storage time-series chart sourced only from `timeseries`.
-- Event markers or event list sourced only from `events`.
-- Units, legends, tooltips and no-data handling.
+- [x] KPI summary cards sourced only from `metrics`.
+- [x] Contract-driven time-series chart sourced only from `timeseries`.
+- [x] Event markers and event list sourced only from `events`.
+- [x] Units, legends, pointer tooltips, accessible data table and no-data handling.
 
 Exit gate:
 
-- Replacing one conforming simulator response with another does not require UI
-  logic changes.
+- [x] Metrics, series and event categories are discovered from the response, so
+  replacing one conforming simulator response with another requires no UI logic
+  change.
 
 ### M6 — Scenario comparison and recommendation UX
 
+Status: implemented in the existing static frontend against the M0 scenario
+fixtures. Live mode targets the proposed `/api/scenarios/compare` route with no
+fixture fallback.
+
+Artifacts:
+
+- `static/index.html`
+- `static/styles.css`
+- `static/app.js`
+
 Deliverables:
 
-- Baseline-versus-scenarios metric comparison.
-- Expected and downside outcomes, including P95/failure probability when
+- [x] Baseline-versus-scenarios metric comparison.
+- [x] Expected and downside outcomes, including P95/failure probability when
   supplied.
-- Financial values and payback when supplied by the backend.
-- Recommendation panel with provenance-aware assumptions visible nearby.
-- Clear distinction between simulation output and AI explanation.
+- [x] Financial values and payback when supplied by the backend.
+- [x] Recommendation panel with provenance-aware assumptions visible nearby.
+- [x] Clear distinction between simulation evidence and backend-supplied,
+  optionally AI-assisted explanation.
 
 Exit gate:
 
-- The UI can render the full scenario comparison contract, including partial or
-  failed scenarios, without calculating a recommendation itself.
+- [x] The UI renders completed and failed scenarios from the full comparison
+  contract and displays recommendation deltas/financials verbatim without
+  calculating a recommendation itself.
 
 ### M7 — Integration and demo hardening
 
