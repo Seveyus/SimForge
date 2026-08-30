@@ -3,6 +3,50 @@
 Integration contract for the backend half (Yoann). Written for the AI + UX half
 so the two sides can be wired together without reading each other's internals.
 
+## Running the API
+
+```bash
+pip install -r requirements.txt
+uvicorn app.main:app --reload
+```
+
+| Method | Route | Body | Returns |
+|---|---|---|---|
+| `GET` | `/api/health` | — | `{status, execution, daytona_configured}` |
+| `POST` | `/api/simulations/baseline` | `SimulationRequest` | `SimulationResult` |
+| `POST` | `/api/scenarios/compare` | `ScenarioComparisonRequest` | `ScenarioComparison` |
+| `POST` | `/api/requirements` | `RequirementsRequest` | delegates to `app/requirements_agent.py` |
+
+`static/` is served at `/`, so the frontend and the API share an origin — no CORS
+to configure.
+
+**Request bodies are exactly the contract models**, validated with your own
+`app/models.py`. To pin the executor, use a query parameter rather than a body
+field (the models forbid extras, correctly):
+
+```
+POST /api/scenarios/compare?execution=local     # or daytona, or omit for auto
+```
+
+`/api/requirements` returns the documented `gemini_unavailable` error until
+`app/requirements_agent.py` exists — deliberately, so the frontend exercises its
+real error path instead of building against a fake success. Drop the module in
+with a `handle_requirements_request(payload) -> dict` and the route picks it up;
+no change to `main.py` needed.
+
+### Errors
+
+Every non-2xx uses the envelope from `static/fixtures/api-error.json`, with the
+documented code/status mapping. Messages are safe to display: provider traces,
+generated source, credentials and stack traces never leave the server. Use
+`retryable` rather than inferring from the status. Every response carries an
+`x-request-id` header (echoed from the request if you send one) that matches the
+`request_id` in the error body, so a user-reported failure can be found in the log.
+
+A failed scenario does **not** fail the comparison: as long as the baseline and
+at least one scenario completed, you get HTTP 200, the failed scenario preserved
+with its error, and a recommendation drawn only from completed scenarios.
+
 ## For the AI/UX half: use the contract adapter
 
 `app/api_contract.py` speaks the shape in `static/fixtures/*.json` — ModelSpec
