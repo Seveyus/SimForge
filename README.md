@@ -105,6 +105,30 @@ Open [http://127.0.0.1:8000](http://127.0.0.1:8000). The FastAPI service hosts b
 
 Without a Gemini key, the simulation API remains usable but live requirements extraction and scenario suggestions return `gemini_unavailable`. Without a Daytona key, simulation requests run locally.
 
+## Use SimForge locally
+
+### Run a live local session
+
+1. Start the server with the command above and open `http://127.0.0.1:8000`.
+2. Leave **Live API** selected.
+3. Describe an operation, or select a CO₂, process-water, grain, or custom-process example.
+4. Select **Build model**, answer any clarification questions, and review the extracted values and assumptions.
+5. Select **Approve ModelSpec**, then **Run baseline**.
+6. Select **Generate scenario ideas**, edit the suggested labels or parameter overrides if needed, then select **Compare reviewed scenarios**.
+7. Use the time-series labels above the chart to show or hide individual lines. The accessible data table always retains the complete result.
+
+The local web server still uses your configured Gemini and Daytona services when their keys are present. If `DAYTONA_API_KEY` is omitted, baseline and scenario simulations run in the local Python process instead.
+
+### Work without external services
+
+For interface development or a deterministic walkthrough without Gemini or Daytona, open:
+
+```text
+http://127.0.0.1:8000/?mode=mock
+```
+
+This uses bundled contract fixtures and is visibly labelled as demo data. It is not live simulation output.
+
 ## Configuration
 
 Environment variables take precedence over values in `.env`.
