@@ -329,16 +329,28 @@ Exit gate:
 
 ### M3 — Safe simulator prompt generation
 
+Status: implemented and live-verified on `ebrahim-work` with Gemini 3.6 Flash.
+
+Artifact:
+
+- `app/simulator_generator.py` contains versioned initial/repair prompts,
+  structured Gemini source generation, deterministic ModelSpec fingerprints,
+  bounded provider retries, credential-safe error sanitisation, a one-repair
+  limit and an injectable fixture client. It returns source and metadata only.
+
 Deliverables:
 
-- Versioned generation prompt built from a validated `ModelSpec`.
-- Exact simulator signature and result contract in the prompt.
-- Reproducibility, dependency and sandbox restrictions.
-- One repair-prompt path that accepts validation/execution errors.
+- [x] Build a versioned generation prompt from a validated `ModelSpec`.
+- [x] Require the exact simulator signature and result contract.
+- [x] Require seeded reproducibility, bounded loops, allowed dependencies and
+  sandbox-safe behavior.
+- [x] Implement one sanitised repair-prompt path for validation/execution errors.
+- [x] Live-generate source with Gemini 3.6 Flash, parse its Python syntax and
+  verify its imports/signature without importing or executing it.
 
 Exit gate:
 
-- Generated output can be handed to the teammate's validator/Daytona runner
+- [x] Generated output can be handed to the teammate's validator/Daytona runner
   without this module executing it or depending on Daytona internals.
 
 ### M4 — Frontend shell and modelling flow
