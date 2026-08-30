@@ -213,19 +213,17 @@ def compare_scenarios(
     include_representative_run: bool = True,
     simulate_fn: Callable[..., dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Run the baseline and every scenario, and assemble the decision output.
+    """Run the baseline and every scenario locally, and assemble the decision.
 
     Every scenario uses the same rollout seeds as the baseline, so scenario *i*
     and baseline *i* are the same stochastic future with a different
     intervention (common random numbers).
 
     Returns:
-        ``{"baseline": {...}, "scenarios": [...], "ranking": [...],
-           "recommendation": {...}, "assumptions": {...}, "runtime_seconds": ...}``
+        See :func:`assemble_comparison`.
     """
     base_config = dict(base_config or BASELINE_CONFIG)
     scenarios = list(scenarios if scenarios is not None else DEMO_SCENARIOS)
-    base_econ = dict(baseline_economics or BASELINE_ECONOMICS)
     started = time.perf_counter()
 
     baseline_mc = run_monte_carlo(
@@ -235,6 +233,60 @@ def compare_scenarios(
         name="baseline",
         simulate_fn=simulate_fn,
     )
+    if include_representative_run:
+        baseline_mc["representative_run"] = representative_run(
+            base_config, base_seed=base_seed, simulate_fn=simulate_fn
+        )
+
+    scenario_mcs: dict[str, dict[str, Any]] = {}
+    for scenario in scenarios:
+        mc = run_scenario_monte_carlo(
+            base_config, scenario, n_runs=n_runs, base_seed=base_seed,
+            simulate_fn=simulate_fn,
+        )
+        if include_representative_run:
+            mc["representative_run"] = representative_run(
+                mc["config"], base_seed=base_seed, simulate_fn=simulate_fn
+            )
+        scenario_mcs[scenario["name"]] = mc
+
+    comparison = assemble_comparison(
+        baseline_mc,
+        scenario_mcs,
+        scenarios,
+        base_config=base_config,
+        baseline_economics=baseline_economics,
+        finance_config=finance_config,
+        n_runs=n_runs,
+        base_seed=base_seed,
+    )
+    comparison["runtime_seconds"] = time.perf_counter() - started
+    comparison["execution"] = {"mode": "local"}
+    return comparison
+
+
+def assemble_comparison(
+    baseline_mc: dict[str, Any],
+    scenario_mcs: dict[str, dict[str, Any]],
+    scenarios: list[dict[str, Any]],
+    base_config: dict[str, Any] | None = None,
+    baseline_economics: dict[str, Any] | None = None,
+    finance_config: dict[str, Any] | None = None,
+    n_runs: int | None = None,
+    base_seed: int | None = None,
+) -> dict[str, Any]:
+    """Build the decision output from Monte Carlo results.
+
+    Deliberately independent of *where* the rollouts ran: the results may come
+    from this process or from a Daytona sandbox, since both are produced by the
+    same :func:`~app.monte_carlo.run_monte_carlo`. That keeps the decision layer
+    free of any execution concern.
+
+    Returns:
+        ``{"baseline": {...}, "scenarios": [...], "ranking": [...],
+           "recommendation": {...}, "assumptions": {...}}``
+    """
+    base_econ = dict(baseline_economics or BASELINE_ECONOMICS)
     baseline_summary = finance.summarise_for_finance(baseline_mc)
 
     baseline_block: dict[str, Any] = {
@@ -244,24 +296,19 @@ def compare_scenarios(
         "operational": operational_delta(baseline_mc, baseline_mc),
         "stats": baseline_mc["stats"],
         "failure_probability": baseline_mc["failure_probability"],
-        "runs": baseline_mc["runs"],
+        "runs": baseline_mc.get("runs", {}),
         "economics": base_econ,
     }
-    if include_representative_run:
-        baseline_block["representative_run"] = representative_run(
-            base_config, base_seed=base_seed, simulate_fn=simulate_fn
-        )
+    if "representative_run" in baseline_mc:
+        baseline_block["representative_run"] = baseline_mc["representative_run"]
 
     scenario_blocks: list[dict[str, Any]] = []
     for scenario in scenarios:
-        mc = run_scenario_monte_carlo(
-            base_config, scenario, n_runs=n_runs, base_seed=base_seed,
-            simulate_fn=simulate_fn,
-        )
+        mc = scenario_mcs[scenario["name"]]
         block = {
-            "name": mc["name"],
-            "label": mc["label"],
-            "overrides": mc["overrides"],
+            "name": scenario["name"],
+            "label": scenario.get("label", scenario["name"]),
+            "overrides": dict(scenario.get("overrides") or {}),
             "config": mc["config"],
             "operational": operational_delta(baseline_mc, mc),
             "financial": finance.evaluate_scenario(
@@ -273,13 +320,13 @@ def compare_scenarios(
             ),
             "stats": mc["stats"],
             "failure_probability": mc["failure_probability"],
-            "runs": mc["runs"],
-            "economics": mc["economics"],
+            "runs": mc.get("runs", {}),
+            "economics": dict(scenario.get("economics") or {}),
         }
-        if include_representative_run:
-            block["representative_run"] = representative_run(
-                block["config"], base_seed=base_seed, simulate_fn=simulate_fn
-            )
+        if "representative_run" in mc:
+            block["representative_run"] = mc["representative_run"]
+        if mc.get("sandbox_id"):
+            block["sandbox_id"] = mc["sandbox_id"]
         scenario_blocks.append(block)
 
     ranking = rank_scenarios(scenario_blocks)
@@ -293,10 +340,10 @@ def compare_scenarios(
         "ranking": ranking,
         "recommendation": build_recommendation(scenario_blocks, ranking),
         "assumptions": {
-            "n_runs": n_runs,
-            "base_seed": base_seed,
+            "n_runs": n_runs if n_runs is not None else baseline_mc["n_runs"],
+            "base_seed": base_seed if base_seed is not None else baseline_mc["base_seed"],
             "ranking_rule": RANKING_RULE,
-            "failure_definition": baseline_mc["failure_definition"],
+            "failure_definition": baseline_mc.get("failure_definition", ""),
             "finance_config": fin_cfg,
             "baseline_economics": base_econ,
             "common_random_numbers": (
@@ -305,7 +352,6 @@ def compare_scenarios(
                 "a different intervention."
             ),
         },
-        "runtime_seconds": time.perf_counter() - started,
     }
 
 
