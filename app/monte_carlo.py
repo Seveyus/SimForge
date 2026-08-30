@@ -1,4 +1,4 @@
-"""Monte Carlo stress testing for the CO2 operation.
+"""Monte Carlo stress testing for buffer-logistics operations.
 
 A single stochastic run answers "what happened in one future". The demo needs
 "what is likely to happen, and how bad can it get" - so every scenario is
@@ -17,9 +17,9 @@ import time
 from typing import Any, Callable, Iterable
 
 try:  # normal repo layout
-    from reference.co2_simulation import derive_seed, simulate, validate_result
+    from reference.buffer_logistics import derive_seed, simulate, validate_result
 except ImportError:  # flat layout inside a Daytona sandbox
-    from co2_simulation import derive_seed, simulate, validate_result  # type: ignore
+    from buffer_logistics import derive_seed, simulate, validate_result  # type: ignore
 
 #: Default number of stochastic futures per scenario.
 DEFAULT_N_RUNS = 200

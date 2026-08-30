@@ -37,6 +37,7 @@ from app.env import load_env
 from app.models import (
     RequirementsRequest,
     ScenarioComparisonRequest,
+    ScenarioSuggestionRequest,
     SimulationRequest,
 )
 from app.pipeline import daytona_available
@@ -227,6 +228,13 @@ def create_app() -> FastAPI:
         validated = parse_request(RequirementsRequest, payload)
         return await run_in_threadpool(run_requirements, validated)
 
+    @app.post("/api/scenarios/suggest")
+    async def scenarios_suggest(request: Request) -> dict[str, Any]:
+        """Return three validated Gemini interventions for explicit user review."""
+        payload = await read_json(request)
+        validated = parse_request(ScenarioSuggestionRequest, payload)
+        return await run_in_threadpool(run_suggestions, validated.model_spec)
+
     if STATIC_DIR.exists():
         app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
 
@@ -360,6 +368,21 @@ def run_requirements(validated: Any) -> dict[str, Any]:
         raise ApiError("internal_error") from exc
 
     return result.model_dump(mode="json") if hasattr(result, "model_dump") else result
+
+
+def run_suggestions(model_spec: Any) -> dict[str, Any]:
+    """Call the shared Gemini adapter and expose only validated suggestions."""
+    requirements_agent = importlib.import_module("app.requirements_agent")
+    try:
+        result = requirements_agent.suggest_scenarios(model_spec)
+    except getattr(requirements_agent, "RequirementsConfigurationError", _Unraisable) as exc:
+        raise ApiError("gemini_unavailable", str(exc), retryable=False) from exc
+    except getattr(requirements_agent, "RequirementsResponseError", _Unraisable) as exc:
+        logger.warning("gemini returned unusable scenario suggestions: %s", exc)
+        raise ApiError("gemini_invalid_response") from exc
+    except getattr(requirements_agent, "RequirementsProviderError", _Unraisable) as exc:
+        raise ApiError("gemini_unavailable") from exc
+    return result.model_dump(mode="json")
 
 
 class _Unraisable(BaseException):

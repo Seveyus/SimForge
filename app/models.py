@@ -21,7 +21,12 @@ NumericValue = int | float
 _PARAMETER_KEY_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 _ID_PATTERN = re.compile(r"^[a-z][a-z0-9_-]*$")
 _POSITIVE_PARAMETERS = {
+    "buffer_capacity",
+    "buffer_count",
     "collections_per_day",
+    "inflow_rate",
+    "outbound_capacity",
+    "outbound_events_per_day",
     "production_rate",
     "tank_capacity",
     "tank_count",
@@ -35,6 +40,22 @@ _EXPECTED_UNITS = {
     "tank_count": None,
     "tanker_capacity": "tonnes",
 }
+
+_QUANTITY_PARAMETER_KINDS = {
+    "buffer_capacity": "quantity",
+    "inflow_rate": "rate",
+    "initial_buffer": "quantity",
+    "min_outbound_load": "quantity",
+    "outbound_capacity": "quantity",
+    # Backward-compatible CO2 names.
+    "production_rate": "rate",
+    "tank_capacity": "quantity",
+    "tanker_capacity": "quantity",
+    "initial_storage": "quantity",
+    "min_collection_load": "quantity",
+}
+_COUNT_PARAMETERS = {"buffer_count", "tank_count"}
+_SUPPORTED_PROCESS_FAMILIES = {"buffer_logistics", "production_storage_collection"}
 
 
 def _is_number(value: object) -> bool:
@@ -65,8 +86,8 @@ def _validate_parameter_mapping(
             if not _is_number(value) or value <= 0:
                 raise ValueError(f"{key} must be a number greater than zero")
 
-        if key == "tank_count" and not isinstance(value, int):
-            raise ValueError("tank_count must be an integer")
+        if key in _COUNT_PARAMETERS and not isinstance(value, int):
+            raise ValueError(f"{key} must be an integer")
 
         if key.endswith("_probability"):
             if not _is_number(value) or not 0 <= value <= 1:
@@ -87,6 +108,40 @@ class ContractModel(BaseModel):
         str_strip_whitespace=True,
         validate_assignment=True,
     )
+
+
+class QuantityUnit(str, Enum):
+    TONNES = "tonnes"
+    KILOGRAMS = "kilograms"
+    LITRES = "litres"
+    CUBIC_METRES = "cubic_metres"
+    ITEMS = "items"
+
+
+class MaterialConfig(ContractModel):
+    """The single material and quantity unit used throughout one operation."""
+
+    name: str = Field(min_length=1, max_length=100)
+    quantity_unit: QuantityUnit
+
+
+def _validate_model_units(
+    process_family: str | None,
+    material: MaterialConfig | None,
+    parameters: dict[str, ParameterValue],
+) -> None:
+    if process_family is not None and process_family not in _SUPPORTED_PROCESS_FAMILIES:
+        raise ValueError("process_family must be buffer_logistics")
+    quantity_unit = material.quantity_unit.value if material else "tonnes"
+    for key, kind in _QUANTITY_PARAMETER_KINDS.items():
+        parameter = parameters.get(key)
+        if parameter is None:
+            continue
+        expected = f"{quantity_unit}/hour" if kind == "rate" else quantity_unit
+        if parameter.unit != expected:
+            raise ValueError(
+                f"{key} must use {expected}; mixed quantity units are not supported"
+            )
 
 
 class ProvenanceSource(str, Enum):
@@ -152,6 +207,7 @@ class ModelSpec(ContractModel):
         default=None,
         pattern=r"^[a-z][a-z0-9_]*$",
     )
+    material: MaterialConfig | None = None
     time: TimeConfig
     parameters: dict[str, ParameterValue] = Field(min_length=1)
 
@@ -162,6 +218,11 @@ class ModelSpec(ContractModel):
     ) -> dict[str, ParameterValue]:
         return _validate_parameter_mapping(parameters)
 
+    @model_validator(mode="after")
+    def validate_process_and_units(self) -> ModelSpec:
+        _validate_model_units(self.process_family, self.material, self.parameters)
+        return self
+
 
 class ModelSpecDraft(ContractModel):
     """A structurally valid but potentially incomplete specification."""
@@ -171,6 +232,7 @@ class ModelSpecDraft(ContractModel):
         default=None,
         pattern=r"^[a-z][a-z0-9_]*$",
     )
+    material: MaterialConfig | None = None
     time: TimeConfig | None = None
     parameters: dict[str, ParameterValue] = Field(default_factory=dict)
 
@@ -180,6 +242,11 @@ class ModelSpecDraft(ContractModel):
         cls, parameters: dict[str, ParameterValue]
     ) -> dict[str, ParameterValue]:
         return _validate_parameter_mapping(parameters)
+
+    @model_validator(mode="after")
+    def validate_process_and_units(self) -> ModelSpecDraft:
+        _validate_model_units(self.process_family, self.material, self.parameters)
+        return self
 
 
 class ClarificationInputType(str, Enum):
@@ -386,6 +453,7 @@ class ScenarioDefinition(ContractModel):
     id: str = Field(pattern=r"^[a-z][a-z0-9_-]*$")
     label: str = Field(min_length=1)
     parameter_overrides: dict[str, ScalarValue] = Field(min_length=1)
+    economics: dict[str, NumericValue] | None = None
 
     @field_validator("parameter_overrides")
     @classmethod
@@ -396,6 +464,42 @@ class ScenarioDefinition(ContractModel):
             _validate_parameter_key(key)
             _ensure_finite(value, field_name=key)
         return overrides
+
+    @field_validator("economics")
+    @classmethod
+    def validate_economics(
+        cls, economics: dict[str, NumericValue] | None
+    ) -> dict[str, NumericValue] | None:
+        if economics is not None:
+            for key, value in economics.items():
+                _validate_parameter_key(key)
+                if not _is_number(value) or not isfinite(value) or value < 0:
+                    raise ValueError(f"economic value {key} must be a non-negative number")
+        return economics
+
+
+class ScenarioSuggestionRequest(ContractModel):
+    model_spec: ModelSpec
+
+
+class ScenarioSuggestion(ScenarioDefinition):
+    rationale: str = Field(min_length=1, max_length=500)
+
+
+class ScenarioSuggestions(ContractModel):
+    suggestions: list[ScenarioSuggestion] = Field(min_length=3, max_length=3)
+
+    @model_validator(mode="after")
+    def suggestions_must_be_distinct(self) -> ScenarioSuggestions:
+        ids = [item.id for item in self.suggestions]
+        overrides = [
+            tuple(sorted(item.parameter_overrides.items())) for item in self.suggestions
+        ]
+        if len(ids) != len(set(ids)):
+            raise ValueError("scenario suggestion ids must be unique")
+        if len(overrides) != len(set(overrides)):
+            raise ValueError("scenario suggestions must use distinct overrides")
+        return self
 
 
 class ScenarioComparisonRequest(ContractModel):

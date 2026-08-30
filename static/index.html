@@ -8,7 +8,7 @@
       content="Turn an operational description into a transparent, executable model."
     >
     <title>SimForge — AI Modelling Workspace</title>
-    <link rel="stylesheet" href="./styles.css?v=9">
+    <link rel="stylesheet" href="./styles.css?v=12">
   </head>
   <body>
     <a class="skip-link" href="#workspace">Skip to workspace</a>
@@ -24,7 +24,7 @@
 
         <div class="topbar-context" aria-label="Current workspace">
           <span class="context-label">Workspace</span>
-          <span>CO₂ storage resilience</span>
+          <span>Buffer logistics resilience</span>
         </div>
 
         <div class="connection-status" id="connection-status">
@@ -94,17 +94,41 @@
                 name="description"
                 rows="8"
                 maxlength="3000"
-                placeholder="We produce around one tonne of CO₂ per hour. We have two 45-tonne storage tanks and normally one tanker collection per day..."
+                placeholder="Describe material inflow, buffer capacity, outbound removals and disruptions..."
                 aria-describedby="description-help description-error"
               ></textarea>
               <div class="textarea-meta">
-                <button class="text-button" id="use-example" type="button">
-                  Use CO₂ example
-                </button>
+                <span>
+                  <label class="sr-only" for="example-preset">Example operation</label>
+                  <select id="example-preset">
+                    <option value="co2">CO₂</option>
+                    <option value="water">Process water</option>
+                    <option value="grain">Grain</option>
+                    <option value="custom">Custom process…</option>
+                  </select>
+                  <button class="text-button" id="use-example" type="button">Use example</button>
+                </span>
                 <span id="character-count">0 / 3000</span>
               </div>
+              <div class="custom-process-fields" id="custom-process-fields" hidden>
+                <label>
+                  Process or material
+                  <input id="custom-process-name" type="text" maxlength="100" placeholder="e.g. chemical slurry">
+                </label>
+                <label>
+                  Quantity unit
+                  <select id="custom-process-unit">
+                    <option value="tonnes">Tonnes</option>
+                    <option value="kilograms">Kilograms</option>
+                    <option value="litres">Litres</option>
+                    <option value="cubic_metres">Cubic metres</option>
+                    <option value="items">Items</option>
+                  </select>
+                </label>
+              </div>
               <p class="field-help" id="description-help">
-                Include rates, capacities, schedules and the decision you want to test.
+                Choose a preset or describe any process with continuous inflow,
+                finite buffer capacity and scheduled outbound removal.
               </p>
               <p class="field-error" id="description-error" role="alert"></p>
 
@@ -298,7 +322,7 @@
                 <p class="section-index">02</p>
                 <h3 id="chart-heading">Operational time series</h3>
               </div>
-              <div class="chart-legend" id="chart-legend" aria-label="Chart legend"></div>
+              <div class="chart-legend" id="chart-legend" aria-label="Select chart series"></div>
             </div>
             <div class="chart-frame" id="chart-frame">
               <div id="storage-chart"></div>
@@ -338,7 +362,7 @@
             <p class="eyebrow">Decision comparison <span>03</span></p>
             <h2 id="comparison-heading">Intervention scenarios</h2>
             <p class="dashboard-intro">
-              Compare backend-calculated outcomes, downside exposure and supplied financials.
+              Review AI-suggested interventions, then compare simulator-calculated outcomes.
             </p>
           </div>
           <div class="dashboard-run-meta">
@@ -366,10 +390,15 @@
                 Scenario comparison unlocks after a valid baseline response.
               </p>
             </div>
-            <button class="primary-button" id="run-comparison" type="button" disabled>
-              <span>Compare scenarios</span>
-              <span class="button-arrow" aria-hidden="true">→</span>
-            </button>
+            <div class="comparison-action-buttons">
+              <button class="secondary-button" id="suggest-scenarios" type="button" disabled>
+                Generate scenario ideas
+              </button>
+              <button class="primary-button" id="run-comparison" type="button" disabled>
+                <span>Compare reviewed scenarios</span>
+                <span class="button-arrow" aria-hidden="true">→</span>
+              </button>
+            </div>
           </div>
         </div>
 
@@ -401,7 +430,7 @@
                 <span id="recommended-scenario-label"></span>
               </div>
               <h3 id="recommendation-heading"></h3>
-              <p class="explanation-label">AI-assisted explanation · supplied by backend</p>
+              <p class="explanation-label">Decision-rule explanation · supplied by backend</p>
               <p class="recommendation-summary" id="recommendation-summary"></p>
             </div>
             <div class="recommendation-evidence">
@@ -460,6 +489,6 @@
     </div>
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <script type="module" src="./app.js?v=9"></script>
+    <script type="module" src="./app.js?v=12"></script>
   </body>
 </html>

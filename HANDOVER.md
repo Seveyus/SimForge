@@ -92,7 +92,8 @@ app/daytona_runner.py sandbox lifecycle, snapshot, validation
   ↓
 app/monte_carlo.py    N seeded futures per scenario
   ↓
-reference/co2_simulation.py   the simulator — stdlib only, knows nothing else
+reference/buffer_logistics.py generic simulator facade — stdlib only
+reference/co2_simulation.py   numerical compatibility kernel
   ↓
 app/finance.py        CAPEX vs OPEX, payback, annual value
 ```
@@ -107,7 +108,17 @@ Ebrahim's; `app/models.py` holds the shared pydantic contracts.
 | `GET` | `/api/health` | `?deep=1` round-trips a real sandbox |
 | `POST` | `/api/simulations/baseline` | → `SimulationResult` |
 | `POST` | `/api/scenarios/compare` | → `ScenarioComparison` |
+| `POST` | `/api/scenarios/suggest` | → exactly three editable Gemini suggestions |
 | `POST` | `/api/requirements` | → Gemini agent |
+
+### Buffer-logistics contract
+
+`ModelSpec.process_family` is `buffer_logistics` and `material` declares a name
+plus one of `tonnes`, `kilograms`, `litres`, `cubic_metres`, or `items`.
+Canonical inputs are `inflow_rate`, `buffer_count`, `buffer_capacity`,
+`outbound_events_per_day`, and `outbound_capacity`. Legacy CO₂ aliases remain
+accepted. Without confirmed scenario economics, ranking is operational and
+`metadata.ranking_mode` is `operational`.
 
 `?execution=local` skips Daytona (~2 s, no network) — useful when the network is
 bad. `?execution=daytona` forces it. Default picks by whether the key is set.
@@ -116,7 +127,7 @@ bad. `?execution=daytona` forces it. Default picks by whether the key is set.
 
 ## Verified
 
-- **251 tests**, ~6 s: `python -m pytest tests/ -q`
+- **260 tests**, ~8 s: `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q`
 - Sandbox results are **bit-identical** to local, including every timeseries row
 - Mass balance holds to ~1e-13 on every run; asserted on results returning from
   Daytona too
@@ -134,6 +145,12 @@ bad. `?execution=daytona` forces it. Default picks by whether the key is set.
   Gemini produced a `ModelSpec` after clarification, the UI rendered the
   100-rollout baseline and 720-point chart, and all three counterfactual
   scenarios succeeded with zero browser console errors
+- Live process-water generalisation passed on 2026-08-30: Gemini extracted a
+  `cubic_metres` ModelSpec and proposed three editable interventions; Daytona
+  completed the 100-rollout baseline plus all three scenarios; operational
+  ranking returned no financial claims; charts, events, and comparisons used
+  neutral cubic-metre labels; zero browser console errors and zero active
+  sandboxes remained.
 
 ---
 
@@ -162,7 +179,8 @@ runner falls back to uploading, which is slower but always correct.
 
 ## Where the numbers come from
 
-Every figure on screen traces to `reference/co2_simulation.py` (physics) or
+Every figure on screen traces through `reference/buffer_logistics.py` to the
+validated compatibility kernel (physics) or
 `app/finance.py` (economics), through `app/monte_carlo.py`. The LLM writes the
 `ModelSpec` and can phrase the recommendation; it cannot change a number. If
 someone asks "where did that come from", the answer is a function, and

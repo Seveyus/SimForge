@@ -32,18 +32,23 @@ SimForge lets teams **test infrastructure decisions in software before committin
 
 ---
 
-## Hackathon Demo
+## Supported Model Family
 
-The initial end-to-end demo models a CO₂ production, storage and tanker-collection operation.
+SimForge v1 models **buffer-logistics operations**: continuous material inflow,
+finite storage or buffer capacity, and scheduled or disrupted outbound removal.
+CO₂ remains the default compatibility preset; process water and grain are also
+included as examples. The UI also accepts a named custom process/material with
+tonnes, kilograms, litres, cubic metres, or items. A model uses one declared
+quantity unit throughout and never performs silent conversion.
 
 ```text
 Continuous production
         |
         v
-    CO₂ storage
+ Material buffer
         |
         v
-Tanker collections
+Outbound removals
 ```
 
 Example baseline:
@@ -590,7 +595,7 @@ Comparison / Recommendation
 - Pydantic
 
 ### AI
-- OpenAI API
+- Gemini API
 
 ### Execution
 - Daytona
@@ -606,9 +611,6 @@ Comparison / Recommendation
 - CSS
 - JavaScript
 - Chart.js
-
-### Optional research
-- Tavily
 
 ---
 
@@ -770,7 +772,7 @@ Responsibilities:
 - charts
 - scenario comparison UI
 - assumptions review
-- optional Tavily research
+- editable Gemini scenario suggestions
 
 ---
 

@@ -22,9 +22,9 @@ import time
 from typing import Any, Callable
 
 try:  # normal repo layout
-    from reference.co2_simulation import normalise_config, simulate
+    from reference.buffer_logistics import normalise_config, simulate
 except ImportError:  # flat layout inside a Daytona sandbox
-    from co2_simulation import normalise_config, simulate  # type: ignore
+    from buffer_logistics import normalise_config, simulate  # type: ignore
 
 from app import finance
 from app.monte_carlo import (
@@ -54,6 +54,10 @@ RANKING_RULE = (
     "annual_value_gbp = annualised benefit - annual opex delta - "
     "capex / capex_amortisation_years (straight line, no discounting). "
     "Scenarios are ranked by annual_value_gbp, descending."
+)
+OPERATIONAL_RANKING_RULE = (
+    "lowest P95 lost output, then expected lost output, then failure probability, "
+    "then scenario id"
 )
 
 #: The demo baseline. Example demo assumptions, not validated plant data.
@@ -306,6 +310,7 @@ def assemble_comparison(
         ``{"baseline": {...}, "scenarios": [...], "ranking": [...],
            "recommendation": {...}, "assumptions": {...}}``
     """
+    financial_mode = bool(scenarios) and all(s.get("economics") for s in scenarios)
     base_econ = dict(baseline_economics or BASELINE_ECONOMICS)
     baseline_summary = finance.summarise_for_finance(baseline_mc)
 
@@ -347,25 +352,27 @@ def assemble_comparison(
             "overrides": dict(scenario.get("overrides") or {}),
             "config": mc["config"],
             "operational": operational_delta(baseline_mc, mc),
-            "financial": finance.evaluate_scenario(
-                baseline_summary,
-                finance.summarise_for_finance(mc),
-                economics=scenario.get("economics"),
-                baseline_economics=base_econ,
-                finance_config=finance_config,
-            ),
             "stats": mc["stats"],
             "failure_probability": mc["failure_probability"],
             "runs": mc.get("runs", {}),
             "economics": dict(scenario.get("economics") or {}),
         }
+        if financial_mode:
+            block["financial"] = finance.evaluate_scenario(
+                baseline_summary,
+                finance.summarise_for_finance(mc),
+                economics=scenario.get("economics"),
+                baseline_economics=base_econ,
+                finance_config=finance_config,
+            )
         if "representative_run" in mc:
             block["representative_run"] = mc["representative_run"]
         if mc.get("sandbox_id"):
             block["sandbox_id"] = mc["sandbox_id"]
         scenario_blocks.append(block)
 
-    ranking = rank_scenarios(scenario_blocks)
+    ranking_mode = "financial" if financial_mode else "operational"
+    ranking = rank_scenarios(scenario_blocks, mode=ranking_mode)
     fin_cfg = dict(finance.DEFAULT_FINANCE_CONFIG)
     if finance_config:
         fin_cfg.update(finance_config)
@@ -374,11 +381,12 @@ def assemble_comparison(
         "baseline": baseline_block,
         "scenarios": scenario_blocks,
         "ranking": ranking,
-        "recommendation": build_recommendation(scenario_blocks, ranking),
+        "recommendation": build_recommendation(scenario_blocks, ranking, mode=ranking_mode),
+        "ranking_mode": ranking_mode,
         "assumptions": {
             "n_runs": n_runs if n_runs is not None else baseline_mc["n_runs"],
             "base_seed": base_seed if base_seed is not None else baseline_mc["base_seed"],
-            "ranking_rule": RANKING_RULE,
+            "ranking_rule": RANKING_RULE if financial_mode else OPERATIONAL_RANKING_RULE,
             "failure_definition": baseline_mc.get("failure_definition", ""),
             "finance_config": fin_cfg,
             "baseline_economics": base_econ,
@@ -391,7 +399,9 @@ def assemble_comparison(
     }
 
 
-def rank_scenarios(scenario_blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def rank_scenarios(
+    scenario_blocks: list[dict[str, Any]], *, mode: str | None = None
+) -> list[dict[str, Any]]:
     """Rank by `annual_value_gbp`, descending. See :data:`RANKING_RULE`.
 
     The rule is a single, stated number rather than a weighted composite, so
@@ -399,6 +409,28 @@ def rank_scenarios(scenario_blocks: list[dict[str, Any]]) -> list[dict[str, Any]
     differ) is reported alongside so the trade-off stays visible.
     """
     completed = [b for b in scenario_blocks if b.get("status") != STATUS_FAILED]
+    mode = mode or ("financial" if all("financial" in b for b in completed) else "operational")
+    if mode == "operational":
+        ordered = sorted(
+            completed,
+            key=lambda b: (
+                b["operational"]["p95_lost_production_t"],
+                b["operational"]["expected_lost_production_t"],
+                b["operational"]["failure_probability"],
+                b["name"],
+            ),
+        )
+        return [
+            {
+                "rank": index + 1,
+                "name": block["name"],
+                "label": block["label"],
+                "p95_lost_production_t": block["operational"]["p95_lost_production_t"],
+                "expected_lost_production_t": block["operational"]["expected_lost_production_t"],
+                "failure_probability": block["operational"]["failure_probability"],
+            }
+            for index, block in enumerate(ordered)
+        ]
     by_value = sorted(
         completed, key=lambda b: b["financial"]["annual_value_gbp"], reverse=True
     )
@@ -424,15 +456,26 @@ def rank_scenarios(scenario_blocks: list[dict[str, Any]]) -> list[dict[str, Any]
 
 
 def build_recommendation(
-    scenario_blocks: list[dict[str, Any]], ranking: list[dict[str, Any]]
+    scenario_blocks: list[dict[str, Any]], ranking: list[dict[str, Any]], *, mode: str | None = None
 ) -> dict[str, Any]:
     """The backend's own answer, plus the caveat the presentation layer must show.
 
     An LLM may phrase this; it may not change it.
     """
     completed = [b for b in scenario_blocks if b.get("status") != STATUS_FAILED]
+    mode = mode or ("financial" if ranking and "annual_value_gbp" in ranking[0] else "operational")
     if not ranking or not completed:
-        return {"decision": "no_scenarios", "rule": RANKING_RULE}
+        return {"decision": "no_scenarios", "rule": RANKING_RULE if mode == "financial" else OPERATIONAL_RANKING_RULE}
+
+    if mode == "operational":
+        best = ranking[0]
+        return {
+            "decision": best["name"],
+            "label": best["label"],
+            "rule": OPERATIONAL_RANKING_RULE,
+            "most_resilient": best["name"],
+            "note": "Recommended on operational resilience; confirmed cost inputs were not available.",
+        }
 
     best = ranking[0]
     best_is_viable = best["annual_value_gbp"] > 0

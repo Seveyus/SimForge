@@ -40,7 +40,7 @@ def main(argv: list[str]) -> int:
         with open(payload_path) as handle:
             payload = json.load(handle)
 
-        from co2_simulation import simulate, validate_result
+        from buffer_logistics import simulate, validate_result
         from monte_carlo import representative_run, run_monte_carlo
 
         mode = payload.get("mode", "monte_carlo")

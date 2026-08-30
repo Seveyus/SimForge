@@ -1,10 +1,9 @@
-# Ebrahim Work Plan — AI Modelling & UX
+# SimForge Plan — Buffer Logistics Generalisation
 
 ## Mission
 
-Build the AI modelling and user-experience side of SimForge on the `ebrahim-work`
-branch, while keeping a narrow, schema-driven boundary with the simulation and
-decision engine.
+Generalise the proven CO₂ workflow on `codex/generalise-buffer-logistics` while
+keeping the schema-driven boundary between modelling, simulation, and UI.
 
 The finished work should let a user:
 
@@ -14,7 +13,16 @@ The finished work should let a user:
 4. submit a validated `ModelSpec` to the simulator;
 5. view baseline and scenario results without the frontend knowing simulator
    implementation details; and
-6. understand which recommendation is supported by backend-calculated results.
+6. request and edit three Gemini scenario suggestions; and
+7. understand which recommendation is supported by backend-calculated results.
+
+## Current Milestone
+
+The buffer-logistics implementation is complete and live-verified with Gemini,
+Daytona, and the browser. It supports CO₂, process water, and grain presets;
+operational ranking is used unless costs are explicitly supplied. The complete
+260-test suite passes. The preset selector also provides a custom process option
+with an explicit material name and supported quantity unit.
 
 ## Ownership Boundary
 
@@ -453,18 +461,18 @@ Exit gate:
 - The README demo can be performed from a clean checkout with documented setup,
   and every displayed number can be traced to backend output.
 
-### M8 — Optional research, only after M7
+### M8 — Buffer-logistics generalisation
 
-If time remains, add Tavily-backed research for missing benchmark values.
+No external research integration is planned. Missing high-impact values require
+clarification or an explicitly reviewed assumption.
 
 Requirements:
 
-- make research opt-in;
-- retain URL/title/date metadata;
-- label all returned values `researched`;
-- never overwrite a user value;
-- require user review before simulation; and
-- degrade cleanly when `TAVILY_API_KEY` is absent.
+- support one declared quantity unit per model;
+- preserve all legacy CO₂ aliases;
+- propose exactly three editable scenarios;
+- rank operationally unless economics are confirmed; and
+- verify local and Daytona outputs remain equivalent.
 
 ## Suggested Commit Sequence
 
