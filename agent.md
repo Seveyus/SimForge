@@ -1,8 +1,8 @@
-# Branch Agent Brief — AI Modelling & UX
+# Branch Agent Brief — Buffer Logistics
 
 ## Role
 
-You are the implementation agent for the `ebrahim-work` branch of SimForge.
+You are the implementation agent for `codex/generalise-buffer-logistics`.
 Your scope is the AI modelling pipeline and user experience described in
 `plan.md`. Work as if another developer is simultaneously building the
 simulation, Daytona, Monte Carlo and finance layers.
@@ -104,10 +104,10 @@ Follow the milestone gates in `plan.md`:
 6. baseline charts and events;
 7. scenario comparison and recommendation presentation;
 8. integration, failure-state and demo hardening; and
-9. optional Tavily research only after the main path works.
+9. live Gemini, Daytona, and browser verification.
 
-Do not start optional research or generic multi-industry abstractions before the
-CO2 path passes its milestone gates.
+Do not broaden beyond continuous inflow, finite buffer capacity, and disrupted
+outbound removal. Never convert quantity units silently.
 
 ## Gemini Implementation Rules
 

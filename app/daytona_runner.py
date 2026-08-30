@@ -71,6 +71,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 #: by design, so no pip install is needed and startup stays fast.
 MODEL_FILES: tuple[tuple[Path, str], ...] = (
     (REPO_ROOT / "reference" / "co2_simulation.py", "co2_simulation.py"),
+    (REPO_ROOT / "reference" / "buffer_logistics.py", "buffer_logistics.py"),
     (REPO_ROOT / "app" / "monte_carlo.py", "monte_carlo.py"),
     (REPO_ROOT / "app" / "sandbox_entry.py", "sandbox_entry.py"),
 )

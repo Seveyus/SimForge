@@ -36,6 +36,22 @@ def test_same_seed_same_result():
     assert a["timeseries"] == b["timeseries"]
 
 
+def test_canonical_buffer_aliases_are_bit_identical_to_legacy_co2_config():
+    from reference.buffer_logistics import simulate as simulate_buffer
+
+    legacy = {
+        "production_rate_t_per_hour": 1.2, "tank_count": 3,
+        "tank_capacity_t": 40.0, "collections_per_day": 2,
+        "tanker_capacity_t": 30.0, "simulation_days": 4,
+    }
+    canonical = {
+        "inflow_rate": 1.2, "buffer_count": 3,
+        "buffer_capacity": 40.0, "outbound_events_per_day": 2,
+        "outbound_capacity": 30.0, "simulation_days": 4,
+    }
+    assert simulate_buffer(canonical, seed=19) == simulate(legacy, seed=19)
+
+
 def test_different_seed_different_result():
     # Compare a metric that is always stochastic: lost production can legitimately
     # be 0 for two different seeds when neither future breaks the operation.

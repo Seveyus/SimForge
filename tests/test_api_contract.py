@@ -28,9 +28,28 @@ from app.api_contract import (
 )
 from app.api_contract import validate_baseline_result, validate_contract_response
 from app.scenario_runner import STATUS_COMPLETED, STATUS_FAILED
+from app.models import ModelSpec, ScenarioSuggestions
+from app.requirements_agent import FixtureExtractionClient, RequirementsAgent, suggest_scenarios
 
 # The teammate's fixtures are the source of truth for the contract shape.
 FIXTURES = Path(__file__).parent.parent / "static" / "fixtures"
+
+
+def generic_spec(unit="cubic_metres", material="process water") -> dict:
+    return {
+        "objective": "minimise lost process output",
+        "process_family": "buffer_logistics",
+        "material": {"name": material, "quantity_unit": unit},
+        "time": {"simulation_days": 3, "timestep_minutes": 10},
+        "parameters": {
+            "inflow_rate": {"value": 12, "unit": f"{unit}/hour", "source": "user"},
+            "buffer_count": {"value": 2, "unit": None, "source": "user"},
+            "buffer_capacity": {"value": 180, "unit": unit, "source": "user"},
+            "outbound_events_per_day": {"value": 1, "unit": "events/day", "source": "user"},
+            "outbound_capacity": {"value": 200, "unit": unit, "source": "user"},
+            "missed_collection_probability": {"value": 0.08, "unit": "fraction", "source": "user"},
+        },
+    }
 
 
 def fixture(name: str) -> dict:
@@ -297,6 +316,87 @@ def test_assumptions_and_execution_travel_in_baseline_metadata(response):
     assert meta["execution"]["mode"] == "local"
     assert meta["ranking"]
     assert meta["runtime_seconds"] > 0
+
+
+# --------------------------------------------------------------------------
+# Buffer-logistics generalisation
+# --------------------------------------------------------------------------
+
+def test_canonical_and_legacy_co2_names_produce_identical_config():
+    legacy = fixture("baseline-request")["model_spec"]
+    canonical = generic_spec("tonnes", "carbon dioxide")
+    canonical["time"] = dict(legacy["time"])
+    canonical["parameters"].update({
+        "inflow_rate": {"value": legacy["parameters"]["production_rate"]["value"], "unit": "tonnes/hour", "source": "user"},
+        "buffer_count": {"value": legacy["parameters"]["tank_count"]["value"], "unit": None, "source": "user"},
+        "buffer_capacity": {"value": legacy["parameters"]["tank_capacity"]["value"], "unit": "tonnes", "source": "user"},
+        "outbound_events_per_day": {"value": legacy["parameters"]["collections_per_day"]["value"], "unit": "events/day", "source": "user"},
+        "outbound_capacity": {"value": legacy["parameters"]["tanker_capacity"]["value"], "unit": "tonnes", "source": "user"},
+        "missed_collection_probability": {"value": legacy["parameters"]["missed_collection_probability"]["value"], "unit": "fraction", "source": "user"},
+    })
+    assert model_spec_to_config(canonical) == model_spec_to_config(legacy)
+
+
+def test_model_spec_rejects_mixed_quantity_units():
+    spec = generic_spec()
+    spec["parameters"]["outbound_capacity"]["unit"] = "litres"
+    with pytest.raises(ValueError, match="mixed quantity units"):
+        ModelSpec.model_validate(spec)
+
+
+@pytest.mark.parametrize(
+    ("unit", "material"),
+    [("tonnes", "carbon dioxide"), ("cubic_metres", "process water"), ("tonnes", "grain")],
+)
+def test_requirements_agent_extracts_supported_presets(unit, material):
+    extraction = {
+        "objective": "minimise lost output", "material_name": material,
+        "quantity_unit": unit, "simulation_days": 5, "timestep_minutes": 10,
+        "inflow_rate": {"value": 8}, "buffer_count": {"value": 2},
+        "buffer_capacity": {"value": 100},
+        "outbound_events_per_day": {"value": 1},
+        "outbound_capacity": {"value": 120},
+        "missed_collection_probability": {"value": 0.1},
+    }
+    result = RequirementsAgent(FixtureExtractionClient(extraction), model="fixture").build("operation")
+    assert result.status.value == "ready"
+    assert result.model_spec.material.quantity_unit.value == unit
+    assert set(result.model_spec.parameters) >= {
+        "inflow_rate", "buffer_count", "buffer_capacity",
+        "outbound_events_per_day", "outbound_capacity",
+    }
+
+
+def test_scenario_suggestions_are_validated_and_distinct():
+    payload = {"suggestions": [
+        {"id": "more-buffer", "label": "More buffer", "rationale": "Adds headroom.", "parameter_overrides": {"buffer_count": 3}},
+        {"id": "more-events", "label": "More events", "rationale": "Removes material sooner.", "parameter_overrides": {"outbound_events_per_day": 2}},
+        {"id": "larger-event", "label": "Larger event", "rationale": "Improves recovery.", "parameter_overrides": {"outbound_capacity": 240}},
+    ]}
+    result = suggest_scenarios(
+        ModelSpec.model_validate(generic_spec()),
+        client=FixtureExtractionClient(payload), model="fixture",
+    )
+    assert isinstance(result, ScenarioSuggestions)
+    assert len(result.suggestions) == 3
+
+
+def test_generic_comparison_uses_operational_ranking_without_financials():
+    response = run_scenario_comparison({
+        "model_spec": generic_spec(), "rollout_count": 5, "seed": 7,
+        "execution": "local", "scenarios": [
+            {"id": "more-buffer", "label": "More buffer", "parameter_overrides": {"buffer_count": 3}},
+            {"id": "more-events", "label": "More events", "parameter_overrides": {"outbound_events_per_day": 2}},
+            {"id": "larger-event", "label": "Larger event", "parameter_overrides": {"outbound_capacity": 240}},
+        ],
+    })
+    assert response["baseline"]["result"]["metadata"]["ranking_mode"] == "operational"
+    assert response["recommendation"]["financials"] == {}
+    assert all(
+        delta["unit"] == "cubic_metres"
+        for name, delta in response["recommendation"]["metric_deltas"].items()
+        if name != "failure_probability"
+    )
 
 
 # --------------------------------------------------------------------------

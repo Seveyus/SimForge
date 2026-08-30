@@ -2,6 +2,7 @@ const ROUTES = Object.freeze({
   requirements: "/api/requirements",
   baseline: "/api/simulations/baseline",
   scenarios: "/api/scenarios/compare",
+  suggestions: "/api/scenarios/suggest",
 });
 
 const BASELINE_OPTIONS = Object.freeze({
@@ -9,28 +10,11 @@ const BASELINE_OPTIONS = Object.freeze({
   rollout_count: 100,
 });
 
-const SCENARIO_DEFINITIONS = Object.freeze([
-  Object.freeze({
-    id: "add-third-tank",
-    label: "Add a third storage tank",
-    parameter_overrides: Object.freeze({ tank_count: 3 }),
-  }),
-  Object.freeze({
-    id: "increase-collections",
-    label: "Increase collections to twice daily",
-    parameter_overrides: Object.freeze({ collections_per_day: 2 }),
-  }),
-  Object.freeze({
-    id: "larger-tanker",
-    label: "Use a larger tanker",
-    parameter_overrides: Object.freeze({ tanker_capacity: 40 }),
-  }),
-]);
-
-const EXAMPLE_DESCRIPTION =
-  "We produce around one tonne of CO₂ per hour. We have two 45-tonne storage " +
-  "tanks and normally one tanker collection per day. Our objective is to " +
-  "minimise lost production.";
+const EXAMPLE_DESCRIPTIONS = Object.freeze({
+  co2: "We produce around one tonne of CO₂ per hour. We have two 45-tonne storage tanks and normally one 24-tonne tanker collection per day. Our objective is to minimise lost production.",
+  water: "Process water enters a holding system at 12 cubic metres per hour. We have two 180-cubic-metre tanks and remove up to 200 cubic metres once per day. Our objective is to minimise lost process output when removal is disrupted.",
+  grain: "Grain arrives continuously at 8 tonnes per hour. We have three 60-tonne silos and dispatch one 90-tonne outbound load per day. Our objective is to minimise intake curtailment when dispatches are missed or delayed.",
+});
 
 const SOURCE_LABELS = Object.freeze({
   user: "USER",
@@ -60,6 +44,9 @@ const state = {
   lastPayload: null,
   editingAssumption: null,
   approved: false,
+  suggestionPhase: "locked",
+  suggestions: [],
+  suggestionError: null,
   baselinePhase: "locked",
   baselineResult: null,
   baselineError: null,
@@ -76,6 +63,7 @@ const elements = {
   descriptionError: document.querySelector("#description-error"),
   characterCount: document.querySelector("#character-count"),
   useExample: document.querySelector("#use-example"),
+  examplePreset: document.querySelector("#example-preset"),
   reset: document.querySelector("#reset-workspace"),
   buildModel: document.querySelector("#build-model"),
   modeButtons: [...document.querySelectorAll("[data-mode]")],
@@ -136,6 +124,7 @@ const elements = {
   executionNote: document.querySelector("#execution-note"),
   comparisonEmpty: document.querySelector("#comparison-empty"),
   scenarioPlan: document.querySelector("#scenario-plan"),
+  suggestScenarios: document.querySelector("#suggest-scenarios"),
   comparisonEmptyTitle: document.querySelector("#comparison-empty-title"),
   comparisonEmptyCopy: document.querySelector("#comparison-empty-copy"),
   runComparison: document.querySelector("#run-comparison"),
@@ -203,6 +192,8 @@ function sourceClass(source) {
 }
 
 function presentationUnit(key) {
+  const quantityUnit = state.modelSpec?.material?.quantity_unit?.replaceAll("_", " ") ?? "tonnes";
+  if (["lost_output", "p95_lost_output", "total_output", "potential_output", "outbound_total", "buffer_capacity", "final_buffer", "buffer_level", "cumulative_lost_output", "accepted_inflow", "outbound_quantity"].includes(key)) return quantityUnit;
   if (key.endsWith("_t")) return "t";
   if (key.endsWith("_hours")) return "h";
   if (key.endsWith("_minutes")) return "min";
@@ -458,6 +449,68 @@ async function requestComparison(payload) {
   return state.mode === "mock" ? mockComparison() : liveComparison(payload);
 }
 
+async function requestSuggestions(modelSpec) {
+  if (state.mode === "mock") {
+    await new Promise((resolve) => window.setTimeout(resolve, 420));
+    return {
+      suggestions: [
+        { id: "add-buffer", label: "Add buffer capacity", rationale: "More headroom absorbs disrupted outbound events.", parameter_overrides: { buffer_count: 3 } },
+        { id: "increase-outbound", label: "Increase outbound frequency", rationale: "More frequent removals reduce sustained buffer loading.", parameter_overrides: { outbound_events_per_day: 2 } },
+        { id: "larger-outbound", label: "Increase outbound capacity", rationale: "Larger removals provide recovery capacity after disruption.", parameter_overrides: { outbound_capacity: 40 } },
+      ],
+    };
+  }
+  const response = await fetch(ROUTES.suggestions, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model_spec: modelSpec }),
+  });
+  const body = await response.json().catch(() => null);
+  if (!response.ok) {
+    const apiError = body?.error;
+    const error = new Error(apiError?.message || "Scenario suggestions could not be generated.");
+    error.code = apiError?.code || "scenario_suggestion_failed";
+    error.retryable = Boolean(apiError?.retryable);
+    throw error;
+  }
+  return body;
+}
+
+function validateSuggestions(payload) {
+  if (!payload || !Array.isArray(payload.suggestions) || payload.suggestions.length !== 3) {
+    throw new Error("The modelling service must return exactly three scenario suggestions.");
+  }
+  const ids = new Set();
+  for (const suggestion of payload.suggestions) {
+    if (!suggestion || typeof suggestion.id !== "string" || typeof suggestion.label !== "string" || typeof suggestion.rationale !== "string" || !suggestion.parameter_overrides || !Object.keys(suggestion.parameter_overrides).length) {
+      throw new Error("A scenario suggestion is incomplete.");
+    }
+    if (ids.has(suggestion.id)) throw new Error("Scenario suggestion ids must be unique.");
+    ids.add(suggestion.id);
+    for (const value of Object.values(suggestion.parameter_overrides)) {
+      if (typeof value !== "number" || !Number.isFinite(value)) throw new Error("Scenario overrides must be finite numbers.");
+    }
+  }
+  return payload.suggestions;
+}
+
+async function runSuggestions() {
+  if (!state.modelSpec) return;
+  state.suggestionPhase = "loading";
+  state.suggestionError = null;
+  render();
+  try {
+    state.suggestions = deepClone(validateSuggestions(await requestSuggestions(state.modelSpec)));
+    state.suggestionPhase = "ready";
+  } catch (error) {
+    state.suggestions = [];
+    state.suggestionPhase = "error";
+    state.suggestionError = { message: error.message || "Scenario suggestions failed.", retryable: error.retryable !== false };
+  } finally {
+    render();
+  }
+}
+
 function validateScenarioRun(run, { baseline = false } = {}) {
   if (
     !run ||
@@ -588,6 +641,9 @@ async function runRequirements(payload) {
   state.comparisonResult = null;
   state.comparisonError = null;
   state.lastComparisonPayload = null;
+  state.suggestionPhase = "locked";
+  state.suggestions = [];
+  state.suggestionError = null;
   state.busy = true;
   state.error = null;
   state.lastPayload = deepClone(payload);
@@ -867,7 +923,8 @@ function renderReview() {
   elements.reviewState.textContent = state.phase === "ready" ? (state.approved ? "Approved" : "Ready to review") : "Draft model";
   elements.reviewState.className = `review-state${state.phase === "ready" ? " is-ready" : ""}`;
   elements.objectiveText.textContent = spec.objective || "Objective requires clarification";
-  elements.familyLabel.textContent = humanise(spec.process_family || "Process family pending");
+  const material = spec.material ? ` · ${spec.material.name} (${humanise(spec.material.quantity_unit)})` : "";
+  elements.familyLabel.textContent = `${humanise(spec.process_family || "Process family pending")}${material}`;
   renderTime(spec);
   renderParameters(spec);
   renderAssumptions();
@@ -884,7 +941,11 @@ function renderReview() {
 
 function renderMetrics(metrics) {
   clear(elements.metricGrid);
-  const entries = Object.entries(metrics).sort(([left], [right]) => left.localeCompare(right));
+  const genericPresent = Object.hasOwn(metrics, "lost_output");
+  const legacyAliases = new Set(["lost_production_t", "p95_lost_production_t", "total_production_t", "potential_production_t", "collected_t", "total_capacity_t", "final_storage_t", "tank_utilisation"]);
+  const entries = Object.entries(metrics)
+    .filter(([key]) => !genericPresent || !legacyAliases.has(key))
+    .sort(([left], [right]) => left.localeCompare(right));
   elements.metricSummaryCount.textContent = `${entries.length} metric${entries.length === 1 ? "" : "s"}`;
   elements.metricsEmpty.hidden = entries.length > 0;
   elements.metricGrid.hidden = entries.length === 0;
@@ -908,7 +969,9 @@ function seriesKeysFor(points) {
       if (key !== "time_hours") keys.add(key);
     }
   }
-  return [...keys].sort();
+  const genericPresent = keys.has("buffer_level");
+  const legacyAliases = new Set(["tank_level_t", "cumulative_lost_production_t", "production_t", "collected_t"]);
+  return [...keys].filter((key) => !genericPresent || !legacyAliases.has(key)).sort();
 }
 
 function showChartTooltip(event, key, value, timeHours) {
@@ -1209,13 +1272,41 @@ function renderBaseline() {
 
 function renderScenarioPlan() {
   clear(elements.scenarioPlan);
-  SCENARIO_DEFINITIONS.forEach((scenario, index) => {
+  if (state.suggestionPhase === "loading") {
+    elements.scenarioPlan.append(createElement("p", "dashboard-no-data", "Gemini is proposing three editable interventions…"));
+    return;
+  }
+  if (state.suggestionPhase === "error") {
+    elements.scenarioPlan.append(createElement("p", "dashboard-no-data", state.suggestionError?.message ?? "Scenario suggestions are unavailable."));
+    return;
+  }
+  if (!state.suggestions.length) {
+    elements.scenarioPlan.append(createElement("p", "dashboard-no-data", "Approve the ModelSpec, then explicitly request three scenario ideas."));
+    return;
+  }
+  state.suggestions.forEach((scenario, index) => {
     const item = createElement("article", "scenario-plan-item");
     item.append(createElement("p", "scenario-plan-index", `SCENARIO ${String(index + 1).padStart(2, "0")}`));
-    item.append(createElement("h3", "", scenario.label));
+    const label = createElement("input", "scenario-label-input");
+    label.type = "text";
+    label.value = scenario.label;
+    label.dataset.scenarioIndex = String(index);
+    label.dataset.scenarioField = "label";
+    label.setAttribute("aria-label", `Scenario ${index + 1} label`);
+    item.append(label, createElement("p", "scenario-rationale", scenario.rationale));
     const overrides = createElement("ul", "scenario-override-list");
     for (const [key, value] of Object.entries(scenario.parameter_overrides)) {
-      overrides.append(createElement("li", "", `${humanise(key)} = ${value}`));
+      const row = createElement("li");
+      const name = createElement("span", "", humanise(key));
+      const input = createElement("input", "scenario-override-input");
+      input.type = "number";
+      input.step = "any";
+      input.value = String(value);
+      input.dataset.scenarioIndex = String(index);
+      input.dataset.overrideKey = key;
+      input.setAttribute("aria-label", `${scenario.label}: ${humanise(key)}`);
+      row.append(name, input);
+      overrides.append(row);
     }
     item.append(overrides);
     elements.scenarioPlan.append(item);
@@ -1287,7 +1378,9 @@ function metricKeysForRuns(runs) {
     if (run.status !== "completed") continue;
     for (const key of Object.keys(run.result.metrics)) keys.add(key);
   }
-  return [...keys].sort();
+  const genericPresent = keys.has("lost_output");
+  const legacyAliases = new Set(["lost_production_t", "p95_lost_production_t", "total_production_t", "potential_production_t", "collected_t", "total_capacity_t", "final_storage_t", "tank_utilisation"]);
+  return [...keys].filter((key) => !genericPresent || !legacyAliases.has(key)).sort();
 }
 
 function renderComparisonTable(baseline, scenarios, recommendation) {
@@ -1423,6 +1516,11 @@ function renderComparison() {
   elements.comparisonLoading.hidden = phase !== "loading";
   elements.comparisonError.hidden = phase !== "error";
   elements.comparisonContent.hidden = phase !== "ready";
+  renderScenarioPlan();
+  elements.suggestScenarios.disabled = !state.approved || state.suggestionPhase === "loading" || state.comparisonPhase === "loading";
+  elements.suggestScenarios.textContent = state.suggestionPhase === "loading"
+    ? "Generating ideas…"
+    : state.suggestionPhase === "ready" ? "Regenerate scenario ideas" : "Generate scenario ideas";
 
   if (phase === "locked") {
     elements.comparisonStatus.textContent = "Waiting for baseline";
@@ -1435,10 +1533,10 @@ function renderComparison() {
   } else if (phase === "idle") {
     elements.comparisonStatus.textContent = "Ready to compare";
     elements.comparisonStatus.className = "review-state is-ready";
-    elements.comparisonMetadata.textContent = `${SCENARIO_DEFINITIONS.length} interventions · ${BASELINE_OPTIONS.rollout_count} rollouts each`;
+    elements.comparisonMetadata.textContent = `${state.suggestions.length} reviewed interventions · ${BASELINE_OPTIONS.rollout_count} rollouts each`;
     elements.comparisonEmptyTitle.textContent = "Baseline completed";
     elements.comparisonEmptyCopy.textContent = "Compare the three explicit interventions against the same approved ModelSpec and seeded run settings.";
-    elements.runComparison.disabled = false;
+    elements.runComparison.disabled = state.suggestionPhase !== "ready";
   } else if (phase === "loading") {
     elements.comparisonStatus.textContent = "Comparing";
     elements.comparisonStatus.className = "review-state is-ready";
@@ -1472,7 +1570,7 @@ function render() {
   renderReview();
   renderBaseline();
   renderComparison();
-  const operationBusy = state.busy || state.baselinePhase === "loading" || state.comparisonPhase === "loading";
+  const operationBusy = state.busy || state.suggestionPhase === "loading" || state.baselinePhase === "loading" || state.comparisonPhase === "loading";
   elements.buildModel.disabled = operationBusy;
   elements.reset.disabled = operationBusy;
   for (const button of elements.modeButtons) button.disabled = operationBusy;
@@ -1493,6 +1591,9 @@ function resetWorkspace({ preserveDescription = false } = {}) {
     lastPayload: null,
     editingAssumption: null,
     approved: false,
+    suggestionPhase: "locked",
+    suggestions: [],
+    suggestionError: null,
     baselinePhase: "locked",
     baselineResult: null,
     baselineError: null,
@@ -1537,7 +1638,7 @@ elements.description.addEventListener("input", () => {
 });
 
 elements.useExample.addEventListener("click", () => {
-  elements.description.value = EXAMPLE_DESCRIPTION;
+  elements.description.value = EXAMPLE_DESCRIPTIONS[elements.examplePreset.value] ?? EXAMPLE_DESCRIPTIONS.co2;
   elements.descriptionError.textContent = "";
   updateCharacterCount();
   elements.description.focus();
@@ -1645,6 +1746,7 @@ elements.copyJson.addEventListener("click", async () => {
 elements.approveModel.addEventListener("click", () => {
   if (!state.modelSpec || state.phase !== "ready") return;
   state.approved = true;
+  state.suggestionPhase = "idle";
   state.baselinePhase = "idle";
   render();
   window.dispatchEvent(new CustomEvent("simforge:model-ready", {
@@ -1666,12 +1768,25 @@ elements.retryBaseline.addEventListener("click", () => {
 });
 
 elements.runComparison.addEventListener("click", () => {
-  if (!state.modelSpec || state.baselinePhase !== "ready" || state.comparisonPhase !== "idle") return;
+  if (!state.modelSpec || state.baselinePhase !== "ready" || state.comparisonPhase !== "idle" || state.suggestionPhase !== "ready") return;
   runComparison({
     model_spec: deepClone(state.modelSpec),
-    scenarios: deepClone(SCENARIO_DEFINITIONS),
+    scenarios: deepClone(state.suggestions).map(({ id, label, parameter_overrides }) => ({ id, label, parameter_overrides })),
     ...BASELINE_OPTIONS,
   });
+});
+
+elements.suggestScenarios.addEventListener("click", runSuggestions);
+
+elements.scenarioPlan.addEventListener("input", (event) => {
+  const index = Number(event.target.dataset.scenarioIndex);
+  const scenario = state.suggestions[index];
+  if (!scenario) return;
+  if (event.target.dataset.scenarioField === "label") scenario.label = event.target.value;
+  if (event.target.dataset.overrideKey) {
+    const value = Number(event.target.value);
+    if (Number.isFinite(value)) scenario.parameter_overrides[event.target.dataset.overrideKey] = value;
+  }
 });
 
 elements.retryComparison.addEventListener("click", () => {
@@ -1679,5 +1794,4 @@ elements.retryComparison.addEventListener("click", () => {
 });
 
 updateCharacterCount();
-renderScenarioPlan();
 render();

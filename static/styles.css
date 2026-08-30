@@ -1648,6 +1648,53 @@ pre {
   font-size: 0.86rem;
 }
 
+.comparison-action-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  justify-content: flex-end;
+}
+
+.scenario-label-input,
+.scenario-override-input,
+#example-preset {
+  border: 1px solid var(--line, #c8ccc6);
+  border-radius: 0;
+  background: var(--paper, #f7f7f2);
+  color: inherit;
+  font: inherit;
+}
+
+.scenario-label-input {
+  width: 100%;
+  padding: 0.55rem 0.6rem;
+  font-weight: 700;
+}
+
+.scenario-rationale {
+  margin: 0.65rem 0;
+  color: var(--muted, #5f655e);
+  font-size: 0.86rem;
+  line-height: 1.45;
+}
+
+.scenario-override-list li {
+  align-items: center;
+  display: flex;
+  gap: 0.75rem;
+  justify-content: space-between;
+}
+
+.scenario-override-input {
+  max-width: 7rem;
+  padding: 0.35rem 0.45rem;
+}
+
+#example-preset {
+  margin-right: 0.45rem;
+  padding: 0.3rem 0.45rem;
+}
+
 .scenario-override-list {
   display: flex;
   flex-wrap: wrap;

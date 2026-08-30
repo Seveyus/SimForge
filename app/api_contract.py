@@ -29,6 +29,17 @@ from reference.co2_simulation import DEFAULT_CONFIG
 #: unit-free names ("tank_capacity"); the simulator carries the unit in the key
 #: ("tank_capacity_t") so a config can never be misread.
 PARAMETER_ALIASES: dict[str, str] = {
+    "inflow_rate": "production_rate_t_per_hour",
+    "inflow_variability": "production_variability_pct",
+    "buffer_count": "tank_count",
+    "buffer_capacity": "tank_capacity_t",
+    "initial_buffer": "initial_storage_t",
+    "outbound_events_per_day": "collections_per_day",
+    "outbound_capacity": "tanker_capacity_t",
+    "missed_outbound_probability": "missed_collection_probability",
+    "outbound_delay_probability": "collection_delay_probability",
+    "outbound_delay_minutes": "collection_delay_minutes",
+    "min_outbound_load": "min_collection_load_t",
     "production_rate": "production_rate_t_per_hour",
     "production_rate_t_per_hour": "production_rate_t_per_hour",
     "production_variability": "production_variability_pct",
@@ -142,7 +153,9 @@ def default_economics(overrides: dict[str, Any]) -> dict[str, Any]:
     return economics
 
 
-def request_to_scenarios(scenarios: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+def request_to_scenarios(
+    scenarios: list[dict[str, Any]] | None, *, use_demo_economics: bool = True
+) -> list[dict[str, Any]]:
     """Turn request scenarios into internal scenario definitions."""
     out: list[dict[str, Any]] = []
     for scenario in scenarios or []:
@@ -155,7 +168,9 @@ def request_to_scenarios(scenarios: list[dict[str, Any]] | None) -> list[dict[st
                 # echoed back verbatim in the response: the caller should see the
                 # names it sent, not our internal unit-suffixed keys
                 "parameter_overrides": dict(scenario.get("parameter_overrides") or {}),
-                "economics": scenario.get("economics") or default_economics(overrides),
+                "economics": scenario.get("economics") or (
+                    default_economics(overrides) if use_demo_economics else None
+                ),
             }
         )
     return out
@@ -217,7 +232,12 @@ EVENT_PRESENTATION: dict[str, tuple[str, Any]] = {
 NON_NUMERIC_METRICS = ("payback_status",)
 
 
-def to_contract_events(events: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+def to_contract_events(
+    events: list[dict[str, Any]] | None,
+    *,
+    quantity_unit: str = "tonnes",
+    neutral: bool = False,
+) -> list[dict[str, Any]]:
     """Reshape simulator events into the contract's event schema.
 
     The simulator emits ``{t_hours, type, ...fields}``; the contract wants
@@ -230,11 +250,38 @@ def to_contract_events(events: list[dict[str, Any]] | None) -> list[dict[str, An
             event["type"], (SEVERITY_INFO, lambda e: e["type"].replace("_", " ").capitalize())
         )
         details = {k: v for k, v in event.items() if k not in ("t_hours", "type")}
+        label = label_for(event)
+        if neutral:
+            type_aliases = {
+                "collection_scheduled": "outbound_scheduled",
+                "collection_completed": "outbound_completed",
+                "collection_delayed": "outbound_delayed",
+                "collection_missed": "outbound_missed",
+                "collection_stood_down": "outbound_stood_down",
+                "storage_capacity_reached": "buffer_capacity_reached",
+                "production_curtailed": "inflow_curtailed",
+            }
+            labels = {
+                "collection_scheduled": f"Outbound removal scheduled (day {event.get('day')}, slot {event.get('slot')})",
+                "collection_completed": f"Outbound event removed {event.get('collected_t', 0):.1f} {quantity_unit}",
+                "collection_delayed": f"Outbound removal delayed by {event.get('delay_minutes', 0):.0f} min",
+                "collection_missed": f"Outbound removal missed, buffer at {event.get('storage_level_t', 0):.1f} {quantity_unit}",
+                "collection_stood_down": f"Outbound removal stood down, only {event.get('storage_level_t', 0):.1f} {quantity_unit} available",
+                "storage_capacity_reached": f"Buffer full at {event.get('capacity_t', 0):.1f} {quantity_unit}",
+                "production_curtailed": f"Inflow curtailed for {event.get('duration_hours', 0):.1f} h, {event.get('lost_production_t', 0):.1f} {quantity_unit} lost",
+            }
+            label = labels.get(event["type"], label)
+            detail_aliases = {
+                "collected_t": "outbound_quantity", "storage_level_t": "buffer_level",
+                "capacity_t": "buffer_capacity", "lost_production_t": "lost_output",
+                "min_load_t": "min_outbound_load",
+            }
+            details = {detail_aliases.get(key, key): value for key, value in details.items()}
         out.append(
             {
                 "time_hours": event["t_hours"],
-                "type": event["type"],
-                "label": label_for(event),
+                "type": type_aliases.get(event["type"], event["type"]) if neutral else event["type"],
+                "label": label,
                 "severity": severity,
                 "details": details,
             }
@@ -261,6 +308,10 @@ def to_frontend_timeseries(run: dict[str, Any] | None) -> list[dict[str, Any]]:
                 "time_hours": row["t_hours"],
                 "tank_level_t": row["storage_level_t"],
                 "cumulative_lost_production_t": round(cumulative, 4),
+                "buffer_level": row["storage_level_t"],
+                "cumulative_lost_output": round(cumulative, 4),
+                "accepted_inflow": row["production_t"],
+                "outbound_quantity": row["collected_t"],
                 # extra series are allowed on TimeseriesPoint, for richer charts
                 "storage_utilisation": row["storage_utilisation"],
                 "production_t": row["production_t"],
@@ -311,7 +362,10 @@ def _result_metrics(block: dict[str, Any]) -> dict[str, Any]:
     return _numeric_only(metrics)
 
 
-def _block_to_entry(block: dict[str, Any], is_baseline: bool = False) -> dict[str, Any]:
+def _block_to_entry(
+    block: dict[str, Any], is_baseline: bool = False, *,
+    quantity_unit: str = "tonnes", neutral: bool = False,
+) -> dict[str, Any]:
     if block.get("status") == STATUS_FAILED:
         entry = {
             "id": block["name"],
@@ -349,7 +403,9 @@ def _block_to_entry(block: dict[str, Any], is_baseline: bool = False) -> dict[st
         "result": {
             "timeseries": to_frontend_timeseries(run),
             "metrics": _result_metrics(block),
-            "events": to_contract_events((run or {}).get("events")),
+            "events": to_contract_events(
+                (run or {}).get("events"), quantity_unit=quantity_unit, neutral=neutral
+            ),
             "metadata": metadata,
         },
         "error": None,
@@ -373,8 +429,11 @@ def _metric_delta(before: float, after: float, unit: str) -> dict[str, Any]:
     }
 
 
-def _recommendation_for(block: dict[str, Any], comparison: dict[str, Any]) -> dict[str, Any]:
-    op, fin = block["operational"], block["financial"]
+def _recommendation_for(
+    block: dict[str, Any], comparison: dict[str, Any], quantity_unit: str = "tonnes",
+    neutral: bool = False,
+) -> dict[str, Any]:
+    op, fin = block["operational"], block.get("financial")
     financials = _numeric_only(
         {
             "capex_gbp": fin["capex_gbp"],
@@ -384,22 +443,22 @@ def _recommendation_for(block: dict[str, Any], comparison: dict[str, Any]) -> di
             "annual_value_gbp": fin["annual_value_gbp"],
             **({"payback_years": fin["payback_years"]}
                if fin["payback_years"] is not None else {}),
-        }
+        } if fin else {}
     )
     return {
         "scenario_id": block["name"],
         "title": block["label"],
         "summary": comparison["recommendation"]["note"],
         "metric_deltas": {
-            "lost_production_t": _metric_delta(
+            ("lost_output" if neutral else "lost_production_t"): _metric_delta(
                 op["baseline_expected_lost_production_t"],
                 op["expected_lost_production_t"],
-                "tonnes",
+                quantity_unit,
             ),
-            "p95_lost_production_t": _metric_delta(
+            ("p95_lost_output" if neutral else "p95_lost_production_t"): _metric_delta(
                 op["baseline_p95_lost_production_t"],
                 op["p95_lost_production_t"],
-                "tonnes",
+                quantity_unit,
             ),
             "failure_probability": _metric_delta(
                 op["baseline_failure_probability"],
@@ -411,7 +470,9 @@ def _recommendation_for(block: dict[str, Any], comparison: dict[str, Any]) -> di
     }
 
 
-def to_comparison_response(comparison: dict[str, Any]) -> dict[str, Any]:
+def to_comparison_response(
+    comparison: dict[str, Any], quantity_unit: str = "tonnes", neutral: bool = False
+) -> dict[str, Any]:
     """Reshape a decision payload into a contract-valid `ScenarioComparison`.
 
     The response carries exactly the three fields the contract allows. The
@@ -423,7 +484,10 @@ def to_comparison_response(comparison: dict[str, Any]) -> dict[str, Any]:
     is the honest answer and the contract permits it; the rejected best option is
     still described in the baseline metadata so the UI has numbers to show.
     """
-    entries = [_block_to_entry(b) for b in comparison["scenarios"]]
+    entries = [
+        _block_to_entry(b, quantity_unit=quantity_unit, neutral=neutral)
+        for b in comparison["scenarios"]
+    ]
     completed_ids = {e["id"] for e in entries if e["status"] == STATUS_COMPLETED}
 
     winner_id = comparison["recommendation"].get("decision")
@@ -440,9 +504,14 @@ def to_comparison_response(comparison: dict[str, Any]) -> dict[str, Any]:
             (b for b in comparison["scenarios"] if b["name"] == best_name), None
         )
 
-    recommendation = _recommendation_for(winner, comparison) if winner else None
+    recommendation = (
+        _recommendation_for(winner, comparison, quantity_unit, neutral) if winner else None
+    )
 
-    baseline_entry = _block_to_entry(comparison["baseline"], is_baseline=True)
+    baseline_entry = _block_to_entry(
+        comparison["baseline"], is_baseline=True,
+        quantity_unit=quantity_unit, neutral=neutral,
+    )
     baseline_entry["result"]["metadata"].update(
         {
             "ranking": comparison["ranking"],
@@ -451,6 +520,7 @@ def to_comparison_response(comparison: dict[str, Any]) -> dict[str, Any]:
             "execution": comparison.get("execution", {}),
             "runtime_seconds": comparison.get("runtime_seconds"),
             "decision": comparison["recommendation"].get("decision"),
+            "ranking_mode": comparison.get("ranking_mode", "financial"),
         }
     )
     if recommendation is None:
@@ -458,9 +528,9 @@ def to_comparison_response(comparison: dict[str, Any]) -> dict[str, Any]:
             "reason": "no scenario has a positive annual value",
             "rejected_scenario_id": rejected["name"] if rejected else None,
             "rejected_annual_value_gbp": (
-                rejected["financial"]["annual_value_gbp"] if rejected else None
+                rejected.get("financial", {}).get("annual_value_gbp") if rejected else None
             ),
-            "detail": _recommendation_for(rejected, comparison) if rejected else None,
+            "detail": _recommendation_for(rejected, comparison, quantity_unit, neutral) if rejected else None,
         }
 
     return {
@@ -500,7 +570,9 @@ def run_scenario_comparison(request: dict[str, Any]) -> dict[str, Any]:
     """
     model_spec = request.get("model_spec")
     config = model_spec_to_config(model_spec)
-    scenarios = request_to_scenarios(request.get("scenarios"))
+    scenarios = request_to_scenarios(
+        request.get("scenarios"), use_demo_economics=not bool((model_spec or {}).get("material"))
+    )
 
     comparison = run_decision_pipeline(
         base_config=config,
@@ -519,10 +591,17 @@ def run_scenario_comparison(request: dict[str, Any]) -> dict[str, Any]:
         if original.get(block["name"]):
             block["parameter_overrides"] = original[block["name"]]
 
-    response = to_comparison_response(comparison)
+    quantity_unit = ((model_spec or {}).get("material") or {}).get("quantity_unit", "tonnes")
+    if (model_spec or {}).get("material"):
+        comparison["baseline"]["label"] = "Baseline"
+    response = to_comparison_response(comparison, quantity_unit, neutral=bool((model_spec or {}).get("material")))
     response["baseline"]["result"]["metadata"]["unmapped_model_spec_parameters"] = (
         unmapped_parameters(model_spec)
     )
+    _add_material_metadata(response["baseline"]["result"], model_spec)
+    for scenario in response["scenarios"]:
+        if scenario.get("result"):
+            _add_material_metadata(scenario["result"], model_spec)
     return response
 
 
@@ -545,7 +624,11 @@ def run_baseline(request: dict[str, Any]) -> dict[str, Any]:
         include_representative_run=True,
         tolerate_failures=True,
     )
-    entry = _block_to_entry(comparison["baseline"], is_baseline=True)
+    material = (model_spec or {}).get("material") or {}
+    entry = _block_to_entry(
+        comparison["baseline"], is_baseline=True,
+        quantity_unit=material.get("quantity_unit", "tonnes"), neutral=bool(material),
+    )
     result = entry["result"]
     result["metadata"].update(
         {
@@ -555,7 +638,33 @@ def run_baseline(request: dict[str, Any]) -> dict[str, Any]:
             "unmapped_model_spec_parameters": unmapped_parameters(model_spec),
         }
     )
+    _add_material_metadata(result, model_spec)
     return result
+
+
+def _add_material_metadata(result: dict[str, Any], model_spec: dict[str, Any] | None) -> None:
+    """Attach neutral labels and numeric aliases without breaking CO2 clients."""
+    material = (model_spec or {}).get("material") or {
+        "name": "carbon dioxide", "quantity_unit": "tonnes"
+    }
+    metadata = result.setdefault("metadata", {})
+    metadata["process_family"] = (
+        (model_spec or {}).get("process_family") or "production_storage_collection"
+    )
+    metadata["material"] = material
+    metrics = result.get("metrics", {})
+    for generic, legacy in {
+        "lost_output": "lost_production_t",
+        "p95_lost_output": "p95_lost_production_t",
+        "total_output": "total_production_t",
+        "potential_output": "potential_production_t",
+        "outbound_total": "collected_t",
+        "buffer_capacity": "total_capacity_t",
+        "final_buffer": "final_storage_t",
+        "buffer_utilisation": "tank_utilisation",
+    }.items():
+        if legacy in metrics:
+            metrics[generic] = metrics[legacy]
 
 
 def validate_baseline_result(result: dict[str, Any]) -> Any:
