@@ -32,9 +32,17 @@ Forking is a real Daytona SDK feature (``Sandbox.fork()``, a copy-on-write
 clone of the filesystem), which is exactly the product concept: the baseline
 world is prepared once, then branched into counterfactual futures that each
 carry the same model and assumptions and differ only by the intervention.
-If forking is unavailable at runtime the runner falls back to creating
-independent sandboxes and records that honestly in
-``isolation_mode`` - we never claim a fork we did not perform.
+
+Fork support is a property of the *sandbox class*: only VM-class sandboxes
+(``linux-vm``, ``windows``) support fork / pause / hot snapshot. Container-class
+sandboxes return HTTP 422 "Forking is not supported for this sandbox". So the
+runner asks for a VM snapshot first, and only falls back to a container sandbox
+if that snapshot is not provisionable for the account or region.
+
+When forking is not available the runner executes each scenario in its own
+independently provisioned sandbox instead, and records both
+``isolation_mode="independent_sandboxes"`` and the reason the API gave. We never
+claim a fork we did not perform - the demo states which of the two it did.
 
 Integrity
 ---------
@@ -69,6 +77,14 @@ WORKDIR = "/home/daytona/simforge"
 DEFAULT_EXEC_TIMEOUT_S = 300
 ISOLATION_NATIVE_FORK = "native_fork"
 ISOLATION_INDEPENDENT = "independent_sandboxes"
+
+#: Snapshots tried, in order, when fork support is wanted. Only VM-class
+#: sandboxes can be forked; availability varies by region and account.
+VM_SNAPSHOTS: tuple[str, ...] = (
+    "daytona-vm-small",
+    "daytona-vm",
+    "daytona-vm-medium",
+)
 
 
 class DaytonaExecutionError(RuntimeError):
@@ -173,6 +189,8 @@ class DaytonaSimulationRunner:
         target: str | None = None,
         exec_timeout_s: int = DEFAULT_EXEC_TIMEOUT_S,
         on_log: Callable[[str], None] | None = None,
+        prefer_fork: bool = True,
+        vm_snapshots: tuple[str, ...] = VM_SNAPSHOTS,
     ) -> None:
         self.api_key = api_key or os.environ.get("DAYTONA_API_KEY")
         self.api_url = api_url or os.environ.get("DAYTONA_API_URL")
@@ -182,7 +200,12 @@ class DaytonaSimulationRunner:
         self._client = None
         self.baseline_sandbox = None
         self._sandboxes: list[Any] = []
-        self.isolation_mode = ISOLATION_NATIVE_FORK
+        self.prefer_fork = prefer_fork
+        self.vm_snapshots = vm_snapshots
+        # Assume nothing: set once we know what the account actually supports.
+        self.isolation_mode = ISOLATION_NATIVE_FORK if prefer_fork else ISOLATION_INDEPENDENT
+        self.fork_unavailable_reason: str | None = None
+        self.sandbox_snapshot: str | None = None
         self.timings: dict[str, float] = {}
 
     # -- lifecycle ------------------------------------------------------
@@ -212,18 +235,16 @@ class DaytonaSimulationRunner:
         return self._client
 
     def prepare(self) -> Any:
-        """Create the baseline sandbox and upload the operational model into it."""
-        from daytona import CreateSandboxFromSnapshotParams, FileUpload
+        """Create the baseline sandbox and upload the operational model into it.
+
+        Tries a VM-class snapshot first when `prefer_fork` is set, because only
+        VM sandboxes can be forked. Falls back to the default container sandbox,
+        recording why, rather than failing the run.
+        """
+        from daytona import FileUpload
 
         started = time.perf_counter()
-        self._log("creating baseline sandbox")
-        sandbox = self.client.create(
-            CreateSandboxFromSnapshotParams(
-                language="python",
-                labels={"app": "simforge", "role": "baseline"},
-            )
-        )
-        self._sandboxes.append(sandbox)
+        sandbox = self._create_sandbox("baseline", allow_vm=self.prefer_fork)
         self.timings["create_baseline_s"] = time.perf_counter() - started
 
         started = time.perf_counter()
@@ -247,6 +268,10 @@ class DaytonaSimulationRunner:
         """
         if self.baseline_sandbox is None:
             raise DaytonaExecutionError("prepare() must be called before fork()")
+        if self.isolation_mode == ISOLATION_INDEPENDENT:
+            # Already established that this account cannot fork; do not spend a
+            # doomed API round trip per scenario.
+            return self._create_independent(name)
         try:
             forked = self.baseline_sandbox.fork(name=f"simforge-{name}-{int(time.time())}")
             self._sandboxes.append(forked)
@@ -254,20 +279,48 @@ class DaytonaSimulationRunner:
             return forked
         except Exception as exc:  # noqa: BLE001 - fall back, but say so
             self.isolation_mode = ISOLATION_INDEPENDENT
+            self.fork_unavailable_reason = f"{type(exc).__name__}: {exc}"
             self._log(f"fork unavailable ({type(exc).__name__}: {exc}); "
                       "provisioning an independent sandbox instead")
             return self._create_independent(name)
 
-    def _create_independent(self, name: str) -> Any:
-        from daytona import CreateSandboxFromSnapshotParams, FileUpload
+    def _create_sandbox(self, role: str, allow_vm: bool = False) -> Any:
+        """Provision one sandbox, preferring a forkable VM class when asked."""
+        from daytona import CreateSandboxFromSnapshotParams
 
-        sandbox = self.client.create(
-            CreateSandboxFromSnapshotParams(
-                language="python",
-                labels={"app": "simforge", "role": name},
+        def create(**extra: Any) -> Any:
+            sandbox = self.client.create(
+                CreateSandboxFromSnapshotParams(
+                    labels={"app": "simforge", "role": role}, **extra
+                )
             )
-        )
-        self._sandboxes.append(sandbox)
+            self._sandboxes.append(sandbox)
+            return sandbox
+
+        if allow_vm:
+            for snapshot in self.vm_snapshots:
+                try:
+                    sandbox = create(snapshot=snapshot)
+                    self.sandbox_snapshot = snapshot
+                    self._log(f"created {role} sandbox from VM snapshot {snapshot} (forkable)")
+                    return sandbox
+                except Exception as exc:  # noqa: BLE001 - try the next, then fall back
+                    self.fork_unavailable_reason = f"{type(exc).__name__}: {exc}"
+                    self._log(f"VM snapshot {snapshot} unavailable: {exc}")
+            self.isolation_mode = ISOLATION_INDEPENDENT
+            self._log(
+                "no forkable VM-class sandbox available for this account/region; "
+                "scenarios will run in independent sandboxes"
+            )
+
+        sandbox = create(language="python")
+        self._log(f"created {role} sandbox (container class)")
+        return sandbox
+
+    def _create_independent(self, name: str) -> Any:
+        from daytona import FileUpload
+
+        sandbox = self._create_sandbox(name)
         sandbox.fs.upload_files(
             [
                 FileUpload(source=src.read_bytes(), destination=f"{WORKDIR}/{dst}")
@@ -436,6 +489,8 @@ def fork_and_run_scenarios(
             "baseline": baseline,
             "scenarios": results,
             "isolation_mode": runner.isolation_mode,
+            "fork_unavailable_reason": runner.fork_unavailable_reason,
+            "sandbox_snapshot": runner.sandbox_snapshot,
             "baseline_sandbox_id": baseline_parsed.get("sandbox_id"),
             "environment": baseline_parsed.get("environment"),
             "timings": dict(runner.timings),

@@ -186,6 +186,62 @@ scenarios = [{
 The recurring logistics cost is derived from the number of tanker trips the
 simulation actually performed, not assumed.
 
+## Daytona execution — what is real
+
+Verified against the live API (region `eu`, 2026-08-30):
+
+| | |
+|---|---|
+| Baseline sandbox create + upload | ~3.9 s |
+| 200 rollouts inside the sandbox | ~0.7 s |
+| 3 scenario sandboxes, in parallel | ~3.0 s |
+| **Full comparison, end to end** | **~8 s** (local: ~2 s) |
+| Sandbox Python | 3.14.4 (local: 3.12.3) |
+| Numbers vs local | **bit-identical**, including the representative timeseries |
+| Sandboxes leaked | 0 |
+
+Reproducibility holds across a Python minor-version gap and a different machine,
+which is the point of deriving seeds with `blake2b` rather than `hash()`.
+
+### On forking
+
+`Sandbox.fork()` is a real, stable SDK feature (copy-on-write clone) and the
+runner implements it — `prepare()` asks for a VM-class snapshot precisely so the
+baseline is forkable, and `fork()` is called per scenario.
+
+**It does not run on this account.** Fork / pause / hot-snapshot are supported
+only on VM-class sandboxes; container-class sandboxes return
+
+```
+422 Unprocessable Entity — "Forking is not supported for this sandbox"
+```
+
+and no VM snapshot (`daytona-vm-small`, `daytona-vm`, `daytona-vm-medium`, …) is
+provisionable in region `eu` or `us` for this key:
+
+```
+400 — "Snapshot daytona-vm-small is not available in region eu"
+```
+
+So the runner detects this once during `prepare()`, then executes **each
+scenario in its own independently provisioned sandbox** and reports:
+
+```json
+"execution": {
+  "isolation_mode": "independent_sandboxes",
+  "fork_unavailable_reason": "DaytonaBadRequestError: … not available in region eu"
+}
+```
+
+Detecting it once rather than per scenario is also worth ~11 s of demo latency
+(19.3 s → 8.0 s), since each doomed `fork()` is a full API round trip.
+
+**Do not claim native forks in the pitch while `isolation_mode` says
+`independent_sandboxes`.** What is true: scenarios are executed in isolated
+Daytona sandboxes, one per counterfactual, in parallel, and each result is
+rejected unless its rollout seeds match the host's. If a VM-capable region or
+account is enabled, `isolation_mode` flips to `native_fork` with no code change.
+
 ## Guarantees this layer provides
 
 1. Same `(config, seed)` → same result, in-process or in a sandbox.
@@ -201,7 +257,7 @@ simulation actually performed, not assumed.
 ## Running it
 
 ```bash
-python -m pytest tests/ -q          # 159 tests, ~2s
+python -m pytest tests/ -q          # 166 tests, ~2s
 python demo.py                      # local, ~2s
 python demo.py --execution daytona  # one forked sandbox per scenario
 python demo.py --json out.json      # full payload incl. representative runs

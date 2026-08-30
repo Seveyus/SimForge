@@ -20,6 +20,7 @@ import pytest
 
 from app.daytona_runner import (
     ISOLATION_INDEPENDENT,
+    VM_SNAPSHOTS,
     ISOLATION_NATIVE_FORK,
     MODEL_FILES,
     DaytonaExecutionError,
@@ -101,13 +102,25 @@ class FakeSandbox:
 
 
 class FakeClient:
-    def __init__(self, tmp_root: Path, can_fork: bool = True):
+    """`vm_available=False` reproduces the real hackathon account: VM-class
+    snapshots cannot be provisioned, so no sandbox is forkable."""
+
+    def __init__(self, tmp_root: Path, can_fork: bool = True, vm_available: bool = True):
         self.tmp_root = tmp_root
         self.can_fork = can_fork
+        self.vm_available = vm_available
         self.created: list[FakeSandbox] = []
+        self.snapshots_requested: list[str | None] = []
         self._lock = threading.Lock()
 
     def create(self, params=None, **kwargs):
+        snapshot = getattr(params, "snapshot", None)
+        self.snapshots_requested.append(snapshot)
+        if snapshot is not None and not self.vm_available:
+            raise RuntimeError(f"Snapshot {snapshot} is not available in region eu")
+        return self._make()
+
+    def _make(self):
         # Unique ids under concurrency, as real sandbox ids are: scenarios are
         # forked and driven in parallel.
         with self._lock:
@@ -125,8 +138,17 @@ def runner(tmp_path):
 
 @pytest.fixture
 def no_fork_runner(tmp_path):
+    """VM sandbox provisions, but fork() itself is refused."""
     r = DaytonaSimulationRunner(api_key="test-key")
     r._client = FakeClient(tmp_path, can_fork=False)
+    return r
+
+
+@pytest.fixture
+def no_vm_runner(tmp_path):
+    """No forkable sandbox class available at all - the real account's case."""
+    r = DaytonaSimulationRunner(api_key="test-key")
+    r._client = FakeClient(tmp_path, can_fork=False, vm_available=False)
     return r
 
 
@@ -455,3 +477,69 @@ def test_pipeline_rejects_an_unknown_execution_mode():
     from app import pipeline
     with pytest.raises(ValueError, match="unknown execution mode"):
         pipeline.run_decision_pipeline(FAST, [], execution="magic")
+
+
+# --------------------------------------------------------------------------
+# Fork support detection
+# --------------------------------------------------------------------------
+
+def test_prepare_asks_for_a_forkable_vm_snapshot_first(runner):
+    """Only VM-class sandboxes can be forked, so try one before a container."""
+    runner.prepare()
+    assert runner._client.snapshots_requested[0] == VM_SNAPSHOTS[0]
+    assert runner.sandbox_snapshot == VM_SNAPSHOTS[0]
+    assert runner.isolation_mode == ISOLATION_NATIVE_FORK
+
+
+def test_prefer_fork_off_skips_the_vm_snapshot(tmp_path):
+    r = DaytonaSimulationRunner(api_key="k", prefer_fork=False)
+    r._client = FakeClient(tmp_path)
+    r.prepare()
+    assert r._client.snapshots_requested == [None]
+    assert r.isolation_mode == ISOLATION_INDEPENDENT
+
+
+def test_no_vm_class_available_falls_back_and_records_why(no_vm_runner):
+    no_vm_runner.prepare()
+    assert no_vm_runner.isolation_mode == ISOLATION_INDEPENDENT
+    assert no_vm_runner.sandbox_snapshot is None
+    assert "not available in region" in no_vm_runner.fork_unavailable_reason
+    # every VM snapshot was tried before giving up, then a container sandbox
+    assert no_vm_runner._client.snapshots_requested == [*VM_SNAPSHOTS, None]
+
+
+def test_known_unforkable_account_does_not_retry_fork_per_scenario(no_vm_runner):
+    """One doomed round trip per scenario is latency we can simply not spend."""
+    no_vm_runner.prepare()
+    before = len(no_vm_runner._client.snapshots_requested)
+    sandbox = no_vm_runner.fork("extra_tank")
+    # a plain container sandbox, requested without a snapshot, and no fork attempt
+    assert no_vm_runner._client.snapshots_requested[before:] == [None]
+    assert {p.name for p in sandbox.root.iterdir()} == {dst for _src, dst in MODEL_FILES}
+
+
+def test_fork_refusal_is_reported_verbatim(no_fork_runner):
+    no_fork_runner.prepare()
+    no_fork_runner.fork("extra_tank")
+    assert no_fork_runner.isolation_mode == ISOLATION_INDEPENDENT
+    assert "fork not supported" in no_fork_runner.fork_unavailable_reason
+
+
+def test_batch_result_surfaces_the_isolation_reason(no_vm_runner):
+    out = fork_and_run_scenarios(
+        apply_overrides(FAST, None), prepared_scenarios(),
+        n_runs=N, base_seed=SEED, with_representative_run=False, runner=no_vm_runner,
+    )
+    assert out["isolation_mode"] == ISOLATION_INDEPENDENT
+    assert out["fork_unavailable_reason"]
+    # and the numbers are unaffected by how the isolation was achieved
+    assert out["baseline"]["seeds"] == out["scenarios"]["extra_tank"]["seeds"]
+
+
+def test_scenarios_are_still_isolated_without_forking(no_vm_runner):
+    out = fork_and_run_scenarios(
+        apply_overrides(FAST, None), prepared_scenarios(),
+        n_runs=N, base_seed=SEED, with_representative_run=False, runner=no_vm_runner,
+    )
+    ids = {out["baseline_sandbox_id"]} | {r["sandbox_id"] for r in out["scenarios"].values()}
+    assert len(ids) == 3, "each scenario still gets its own sandbox"
