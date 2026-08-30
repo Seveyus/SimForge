@@ -62,6 +62,7 @@ from typing import Any, Callable
 
 from app.monte_carlo import AGGREGATED_METRICS, rollout_seed
 from app.sandbox_entry import RESULT_BEGIN, RESULT_END
+from app.scenario_runner import failure_record
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -427,6 +428,7 @@ def fork_and_run_scenarios(
     max_parallel: int = 4,
     on_log: Callable[[str], None] | None = None,
     runner: DaytonaSimulationRunner | None = None,
+    tolerate_failures: bool = False,
 ) -> dict[str, Any]:
     """Execute the baseline and every scenario in Daytona, forking per scenario.
 
@@ -469,12 +471,20 @@ def fork_and_run_scenarios(
         runner.timings["baseline_exec_s"] = time.perf_counter() - baseline_started
 
         def run_one(scenario: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-            sandbox = runner.fork(scenario["name"])
-            parsed = runner.run(sandbox, payload_for(scenario["name"], scenario["config"]))
-            result = parsed["result"]
-            validate_monte_carlo_result(result, n_runs, base_seed)
-            result["sandbox_id"] = parsed.get("sandbox_id")
-            return scenario["name"], result
+            try:
+                sandbox = runner.fork(scenario["name"])
+                parsed = runner.run(sandbox, payload_for(scenario["name"], scenario["config"]))
+                result = parsed["result"]
+                validate_monte_carlo_result(result, n_runs, base_seed)
+                result["sandbox_id"] = parsed.get("sandbox_id")
+                return scenario["name"], result
+            except Exception as exc:  # noqa: BLE001
+                if not tolerate_failures:
+                    raise
+                # One sandbox dying must not take the live demo with it. The
+                # scenario is reported as failed and excluded from the ranking.
+                runner._log(f"scenario {scenario['name']} failed: {exc}")
+                return scenario["name"], {"error": failure_record(exc)}
 
         fork_started = time.perf_counter()
         results: dict[str, dict[str, Any]] = {}

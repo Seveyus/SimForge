@@ -36,6 +36,20 @@ from app.monte_carlo import (
 
 #: How CAPEX and OPEX interventions are made comparable. Stated in the output
 #: so the ranking is never a black box.
+#: Per-scenario execution status, mirroring the frontend contract.
+STATUS_COMPLETED = "completed"
+STATUS_FAILED = "failed"
+
+
+def failure_record(exc: BaseException) -> dict[str, Any]:
+    """Structured error for a scenario that could not be executed."""
+    return {
+        "code": "simulation_failed",
+        "message": f"{type(exc).__name__}: {exc}",
+        "retryable": True,
+    }
+
+
 RANKING_RULE = (
     "annual_value_gbp = annualised benefit - annual opex delta - "
     "capex / capex_amortisation_years (straight line, no discounting). "
@@ -212,6 +226,7 @@ def compare_scenarios(
     baseline_economics: dict[str, Any] | None = None,
     include_representative_run: bool = True,
     simulate_fn: Callable[..., dict[str, Any]] | None = None,
+    tolerate_failures: bool = False,
 ) -> dict[str, Any]:
     """Run the baseline and every scenario locally, and assemble the decision.
 
@@ -240,14 +255,19 @@ def compare_scenarios(
 
     scenario_mcs: dict[str, dict[str, Any]] = {}
     for scenario in scenarios:
-        mc = run_scenario_monte_carlo(
-            base_config, scenario, n_runs=n_runs, base_seed=base_seed,
-            simulate_fn=simulate_fn,
-        )
-        if include_representative_run:
-            mc["representative_run"] = representative_run(
-                mc["config"], base_seed=base_seed, simulate_fn=simulate_fn
+        try:
+            mc = run_scenario_monte_carlo(
+                base_config, scenario, n_runs=n_runs, base_seed=base_seed,
+                simulate_fn=simulate_fn,
             )
+            if include_representative_run:
+                mc["representative_run"] = representative_run(
+                    mc["config"], base_seed=base_seed, simulate_fn=simulate_fn
+                )
+        except Exception as exc:  # noqa: BLE001
+            if not tolerate_failures:
+                raise
+            mc = {"error": failure_record(exc)}
         scenario_mcs[scenario["name"]] = mc
 
     comparison = assemble_comparison(
@@ -305,7 +325,23 @@ def assemble_comparison(
     scenario_blocks: list[dict[str, Any]] = []
     for scenario in scenarios:
         mc = scenario_mcs[scenario["name"]]
+        if mc.get("error"):
+            # A scenario that could not be executed is reported as failed rather
+            # than taking the whole comparison down with it, and is excluded
+            # from the ranking - we never rank a result we do not have.
+            scenario_blocks.append(
+                {
+                    "name": scenario["name"],
+                    "label": scenario.get("label", scenario["name"]),
+                    "overrides": dict(scenario.get("overrides") or {}),
+                    "status": STATUS_FAILED,
+                    "error": mc["error"],
+                    "economics": dict(scenario.get("economics") or {}),
+                }
+            )
+            continue
         block = {
+            "status": STATUS_COMPLETED,
             "name": scenario["name"],
             "label": scenario.get("label", scenario["name"]),
             "overrides": dict(scenario.get("overrides") or {}),
@@ -362,11 +398,12 @@ def rank_scenarios(scenario_blocks: list[dict[str, Any]]) -> list[dict[str, Any]
     nothing arbitrary is hidden inside it. The operational ordering (which can
     differ) is reported alongside so the trade-off stays visible.
     """
+    completed = [b for b in scenario_blocks if b.get("status") != STATUS_FAILED]
     by_value = sorted(
-        scenario_blocks, key=lambda b: b["financial"]["annual_value_gbp"], reverse=True
+        completed, key=lambda b: b["financial"]["annual_value_gbp"], reverse=True
     )
     by_resilience = sorted(
-        scenario_blocks, key=lambda b: b["operational"]["p95_lost_production_t"]
+        completed, key=lambda b: b["operational"]["p95_lost_production_t"]
     )
     resilience_rank = {b["name"]: i + 1 for i, b in enumerate(by_resilience)}
     return [
@@ -393,13 +430,14 @@ def build_recommendation(
 
     An LLM may phrase this; it may not change it.
     """
-    if not ranking:
+    completed = [b for b in scenario_blocks if b.get("status") != STATUS_FAILED]
+    if not ranking or not completed:
         return {"decision": "no_scenarios", "rule": RANKING_RULE}
 
     best = ranking[0]
     best_is_viable = best["annual_value_gbp"] > 0
     most_resilient = min(
-        scenario_blocks, key=lambda b: b["operational"]["p95_lost_production_t"]
+        completed, key=lambda b: b["operational"]["p95_lost_production_t"]
     )
     return {
         "decision": best["name"] if best_is_viable else "do_nothing",

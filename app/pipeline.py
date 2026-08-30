@@ -57,6 +57,7 @@ def run_decision_pipeline(
     include_representative_run: bool = True,
     timeseries_stride: int = 6,
     on_log: Callable[[str], None] | None = None,
+    tolerate_failures: bool = False,
 ) -> dict[str, Any]:
     """Run the baseline and every intervention, and return the decision output.
 
@@ -86,6 +87,7 @@ def run_decision_pipeline(
             finance_config=finance_config,
             baseline_economics=baseline_economics,
             include_representative_run=include_representative_run,
+            tolerate_failures=tolerate_failures,
         )
 
     if execution != EXECUTION_DAYTONA:
@@ -112,6 +114,7 @@ def run_decision_pipeline(
         with_representative_run=include_representative_run,
         timeseries_stride=timeseries_stride,
         on_log=on_log,
+        tolerate_failures=tolerate_failures,
     )
 
     comparison = assemble_comparison(

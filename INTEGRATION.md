@@ -3,7 +3,61 @@
 Integration contract for the backend half (Yoann). Written for the AI + UX half
 so the two sides can be wired together without reading each other's internals.
 
-## One call
+## For the AI/UX half: use the contract adapter
+
+`app/api_contract.py` speaks the shape in `static/fixtures/*.json` — ModelSpec
+in, `{id, label, status, result, error}` out. One call:
+
+```python
+from app.api_contract import run_scenario_comparison, run_baseline
+
+response = run_scenario_comparison({
+    "model_spec": {...},                       # as in baseline-request.json
+    "scenarios": [{"id": "add-third-tank",
+                   "label": "Add a third storage tank",
+                   "parameter_overrides": {"tank_count": 3}}],
+    "seed": 42,
+    "rollout_count": 200,
+    "execution": "auto",                       # "local" | "daytona" | "auto"
+})
+```
+
+It handles the naming gap between the two sides:
+
+| ModelSpec / overrides | simulator config |
+|---|---|
+| `production_rate` | `production_rate_t_per_hour` |
+| `tank_capacity` | `tank_capacity_t` |
+| `tanker_capacity` | `tanker_capacity_t` |
+| `tank_count`, `collections_per_day`, `missed_collection_probability` | unchanged |
+| `time.simulation_days`, `time.timestep_minutes` | unchanged |
+
+A ModelSpec parameter the simulator does not model is **ignored and listed** in
+`assumptions.unmapped_model_spec_parameters` — an LLM-written spec may carry
+economic or descriptive fields. A *scenario override* that maps to nothing
+**raises**, because a dead override would silently invalidate the comparison.
+
+Scenario economics are inferred from the parameter being changed
+(`tank_count` → CAPEX, `collections_per_day` → per-trip cost,
+`tanker_capacity` → dearer trips), or you can pass an explicit `economics` block
+per scenario.
+
+**Scenario failures are tolerated.** A scenario that cannot execute comes back
+`status: "failed"` with `{code, message, retryable}` and is left out of the
+ranking; the rest still produce a decision. One dead sandbox will not take the
+live demo down.
+
+**When nothing pays for itself**, `recommendation.scenario_id` is `null` and
+`rejected_scenario_id` names the best-ranked option, with its deltas and
+financials still filled in so the UI can explain the rejection.
+
+⚠️ The fixture ModelSpec uses `tanker_capacity: 30` against 24 t/day of
+production. That leaves so much recovery capacity that the baseline loses
+**nothing**, so no intervention can pay back and the demo has no decision to
+make. Use **24 t** for the demo — collection capacity exactly matching
+production is what creates the failure mode.
+
+## One call (internal shape)
 
 ```python
 from app.pipeline import run_decision_pipeline
