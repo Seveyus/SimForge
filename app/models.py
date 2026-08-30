@@ -302,6 +302,7 @@ class RequirementsRequest(ContractModel):
     description: str | None = Field(default=None, min_length=1)
     draft_spec: ModelSpecDraft | None = None
     answers: dict[str, Any] = Field(default_factory=dict)
+    assumptions: list[AssumptionRecord] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def require_conversation_input(self) -> RequirementsRequest:
@@ -310,6 +311,9 @@ class RequirementsRequest(ContractModel):
         for question_id in self.answers:
             if not _ID_PATTERN.fullmatch(question_id):
                 raise ValueError(f"invalid clarification question id: {question_id}")
+        assumption_paths = [assumption.path for assumption in self.assumptions]
+        if len(assumption_paths) != len(set(assumption_paths)):
+            raise ValueError("assumption paths must be unique")
         return self
 
 

@@ -48,7 +48,9 @@ Request fixture: [`requirements-request.json`](requirements-request.json)
 ```
 
 `description` is required on the first request. Later requests send back the
-previous `draft_spec` plus answers keyed by question id.
+previous `draft_spec`, its optional `assumptions` list, and answers keyed by
+question id. Returning `assumptions` preserves the provenance of default time
+settings across clarification rounds; older requests without it remain valid.
 
 The response is always one of two successful states:
 

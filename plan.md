@@ -290,13 +290,26 @@ Exit gate:
 
 ### M2 — Requirements agent with Gemini
 
+Status: implemented and live-verified on `ebrahim-work` with Gemini 3.6 Flash.
+
+Artifact:
+
+- `app/requirements_agent.py` contains the current Gemini Interactions API
+  adapter, schema-constrained CO2 extraction, deterministic completeness rules,
+  multi-turn answer merging, explicit defaults, safe provider errors and an
+  injectable fixture client.
+
 Deliverables:
 
-- Structured natural-language parameter extraction.
-- Multi-turn merge of clarification answers into a partial spec.
-- Deterministic required-field and constraint checks.
-- Clear `needs_clarification` and `ready` responses.
-- Fake-client or fixture path for offline development.
+- [x] Implement structured natural-language parameter extraction.
+- [x] Merge clarification answers into a partial spec without another provider
+  call.
+- [x] Apply deterministic required-field, unit and constraint checks.
+- [x] Return clear `needs_clarification` and `ready` states.
+- [x] Provide an injectable fixture client for offline development.
+- [x] Smoke-test live extraction and clarification using `google-genai` 2.20.0
+  and Gemini 3.6 Flash. Gemini 3.7 Flash returned a transient high-demand error,
+  which was surfaced as a retryable provider failure.
 
 Minimum CO2 clarification set:
 
@@ -310,7 +323,8 @@ Minimum CO2 clarification set:
 
 Exit gate:
 
-- The README demo description becomes a valid `ModelSpec`, while an incomplete
+- [x] The README demo description plus its tanker-capacity clarification becomes
+  a valid `ModelSpec`, while an incomplete
   description produces focused questions instead of fabricated plant facts.
 
 ### M3 — Safe simulator prompt generation
