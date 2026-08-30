@@ -5,8 +5,15 @@ is covered by tests. Nothing here is a mock.
 
 ```bash
 pip install -r requirements.txt
+python scripts/build_snapshot.py       # one-off, ~1 min: bakes the model into a
+                                       # Daytona snapshot so sandboxes start in
+                                       # ~0.7s with nothing to upload
 uvicorn app.main:app --reload          # serves the API and static/ on one origin
 ```
+
+Re-run `build_snapshot.py` after any change to the simulator. Its name carries a
+content hash, so a stale snapshot is never silently reused — the runner just
+falls back to uploading, which is slower but always correct.
 
 Check it before you demo:
 
@@ -43,7 +50,8 @@ against it in the test suite. If it type-checks in your models, it will work.
 
 `?execution=local` forces in-process execution (~2 s, no network) — use it while
 developing so you are not waiting on sandboxes. `?execution=daytona` forces
-sandboxes (~8 s). Omit it and the server picks based on whether the key is set.
+sandboxes (~4.5 s: the baseline and all three scenarios are created and executed
+in parallel). Omit it and the server picks based on whether the key is set.
 It is a query parameter and not a body field because `ContractModel` forbids
 extras — your contract stays exactly as you defined it.
 
@@ -193,7 +201,7 @@ had to curtail production at all)"*.
 
 | State | How it arrives |
 |---|---|
-| Loading | ~2 s local, ~8 s Daytona. Show the phase from `execution.timings` afterwards. |
+| Loading | ~2 s local, ~4.5 s Daytona. Show the phase from `execution.timings` afterwards. |
 | Partial | HTTP **200** with `scenarios[i].status == "failed"`, `result: null`, `error: {code, message, retryable}`. Baseline and at least one scenario succeeded. Render the failed card greyed with its message; it is already excluded from `ranking` and the recommendation. |
 | No winner | HTTP 200, `recommendation: null` — see above. |
 | Error | Non-2xx, always `{"error": {code, message, retryable, field_errors, request_id}}`. `message` is safe to display. Use `retryable`, not the status code. |
