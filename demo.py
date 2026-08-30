@@ -62,9 +62,12 @@ def print_operational(comparison: dict) -> None:
         print(f"  overrides: {json.dumps(block['overrides'])}")
         print()
         drop = op["expected_loss_reduction_pct"]
+        # `drop` is a *reduction*, so a positive value means less loss. Printing
+        # it with a leading + read as "88% more lost production", the opposite
+        # of what happened.
+        change = f"   ({-drop:+.0f}% vs baseline)" if drop is not None else ""
         print(
-            f"  Expected lost production   {op['expected_lost_production_t']:8.1f} t"
-            + (f"   ({drop:+.0f}% vs baseline)" if drop is not None else "")
+            f"  Expected lost production   {op['expected_lost_production_t']:8.1f} t{change}"
         )
         print(f"  P95 lost production        {op['p95_lost_production_t']:8.1f} t")
         print(
