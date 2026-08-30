@@ -233,6 +233,105 @@
         </aside>
       </main>
 
+      <section class="dashboard-section" id="baseline-dashboard" aria-labelledby="baseline-heading">
+        <div class="dashboard-header">
+          <div>
+            <p class="eyebrow">Simulation output <span>02</span></p>
+            <h2 id="baseline-heading">Baseline performance</h2>
+            <p class="dashboard-intro">
+              Every value below comes directly from the simulator response contract.
+            </p>
+          </div>
+          <div class="dashboard-run-meta">
+            <span class="review-state" id="baseline-status">Waiting for model</span>
+            <span id="baseline-metadata">No run loaded</span>
+          </div>
+        </div>
+
+        <div class="dashboard-empty" id="baseline-empty">
+          <div class="baseline-empty-mark" aria-hidden="true">RUN / 01</div>
+          <div>
+            <h3 id="baseline-empty-title">Approve a ModelSpec first</h3>
+            <p id="baseline-empty-copy">
+              The baseline run becomes available after the assumptions review is approved.
+            </p>
+          </div>
+          <button class="primary-button" id="run-baseline" type="button" disabled>
+            <span>Run baseline</span>
+            <span class="button-arrow" aria-hidden="true">→</span>
+          </button>
+        </div>
+
+        <div class="dashboard-loading" id="baseline-loading" aria-live="polite" hidden>
+          <span class="loading-spinner" aria-hidden="true"></span>
+          <div>
+            <h3>Running the baseline</h3>
+            <p>Waiting for a contract-shaped simulator response.</p>
+          </div>
+        </div>
+
+        <div class="dashboard-error" id="baseline-error" role="alert" hidden>
+          <div>
+            <p class="section-kicker">Baseline unavailable</p>
+            <h3 id="baseline-error-title">The simulation request failed</h3>
+            <p id="baseline-error-message"></p>
+          </div>
+          <button class="secondary-button" id="retry-baseline" type="button">Retry baseline</button>
+        </div>
+
+        <div class="dashboard-content" id="baseline-content" hidden>
+          <section aria-labelledby="metrics-heading">
+            <div class="dashboard-section-heading">
+              <div>
+                <p class="section-index">01</p>
+                <h3 id="metrics-heading">Run metrics</h3>
+              </div>
+              <span id="metric-summary-count">0 metrics</span>
+            </div>
+            <div class="metric-grid" id="metric-grid"></div>
+            <p class="dashboard-no-data" id="metrics-empty" hidden>No metrics were supplied.</p>
+          </section>
+
+          <section class="chart-section" aria-labelledby="chart-heading">
+            <div class="dashboard-section-heading chart-heading-row">
+              <div>
+                <p class="section-index">02</p>
+                <h3 id="chart-heading">Operational time series</h3>
+              </div>
+              <div class="chart-legend" id="chart-legend" aria-label="Chart legend"></div>
+            </div>
+            <div class="chart-frame" id="chart-frame">
+              <div id="storage-chart"></div>
+              <div class="chart-tooltip" id="chart-tooltip" role="status" hidden></div>
+            </div>
+            <p class="dashboard-no-data" id="chart-empty" hidden>No time-series points were supplied.</p>
+            <p class="chart-keyboard-summary" id="chart-keyboard-summary" aria-live="polite"></p>
+            <details class="data-table-disclosure" id="timeseries-table-disclosure">
+              <summary>View accessible data table <span aria-hidden="true">+</span></summary>
+              <div class="table-scroll">
+                <table id="timeseries-table">
+                  <caption class="sr-only">Baseline time-series values</caption>
+                  <thead></thead>
+                  <tbody></tbody>
+                </table>
+              </div>
+            </details>
+          </section>
+
+          <section aria-labelledby="events-heading">
+            <div class="dashboard-section-heading">
+              <div>
+                <p class="section-index">03</p>
+                <h3 id="events-heading">Run events</h3>
+              </div>
+              <span id="event-count">0 events</span>
+            </div>
+            <ol class="event-list" id="event-list"></ol>
+            <p class="dashboard-no-data" id="events-empty" hidden>No events were reported.</p>
+          </section>
+        </div>
+      </section>
+
       <footer class="footer">
         <span>SIMFORGE / AI MODELLING</span>
         <span>The simulator owns the numbers.</span>

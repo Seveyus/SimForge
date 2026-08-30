@@ -383,17 +383,29 @@ Exit gate:
 
 ### M5 — Baseline dashboard
 
+Status: implemented in the existing static frontend. Demo mode renders the M0
+simulation fixture; live mode targets `/api/simulations/baseline` with no fixture
+fallback. Confirm or rename that centralized route when the teammate mounts the
+simulation API.
+
+Artifacts:
+
+- `static/index.html`
+- `static/styles.css`
+- `static/app.js`
+
 Deliverables:
 
-- KPI summary cards sourced only from `metrics`.
-- Tank/storage time-series chart sourced only from `timeseries`.
-- Event markers or event list sourced only from `events`.
-- Units, legends, tooltips and no-data handling.
+- [x] KPI summary cards sourced only from `metrics`.
+- [x] Contract-driven time-series chart sourced only from `timeseries`.
+- [x] Event markers and event list sourced only from `events`.
+- [x] Units, legends, pointer tooltips, accessible data table and no-data handling.
 
 Exit gate:
 
-- Replacing one conforming simulator response with another does not require UI
-  logic changes.
+- [x] Metrics, series and event categories are discovered from the response, so
+  replacing one conforming simulator response with another requires no UI logic
+  change.
 
 ### M6 — Scenario comparison and recommendation UX
 
