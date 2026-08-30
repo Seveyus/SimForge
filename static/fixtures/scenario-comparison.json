@@ -13,7 +13,10 @@
         "failure_probability": 0.43,
         "p95_lost_production_t": 68
       },
-      "events": []
+      "events": [],
+      "metadata": {
+        "ranking_mode": "financial"
+      }
     },
     "error": null
   },
@@ -36,9 +39,21 @@
           "p95_lost_production_t": 31,
           "capex_gbp": 80000,
           "annual_benefit_gbp": 340667,
-          "payback_years": 0.23
+          "incremental_annual_cost_gbp": 12667,
+          "net_annual_benefit_gbp": 328000,
+          "annual_value_gbp": 320000,
+          "payback_years": 0.24
         },
-        "events": []
+        "events": [],
+        "metadata": {
+          "financial": {
+            "capex_gbp": 80000,
+            "annual_opex_delta_gbp": 12667,
+            "annual_value_gbp": 320000,
+            "payback_years": 0.24,
+            "payback_status": "pays_back"
+          }
+        }
       },
       "error": null
     },
@@ -58,11 +73,22 @@
           "overflow_events": 0,
           "failure_probability": 0.07,
           "p95_lost_production_t": 18,
+          "capex_gbp": 0,
           "incremental_annual_cost_gbp": 95000,
           "annual_benefit_gbp": 425833,
-          "net_annual_benefit_gbp": 330833
+          "net_annual_benefit_gbp": 330833,
+          "annual_value_gbp": 330833
         },
-        "events": []
+        "events": [],
+        "metadata": {
+          "financial": {
+            "capex_gbp": 0,
+            "annual_opex_delta_gbp": 95000,
+            "annual_value_gbp": 330833,
+            "payback_years": null,
+            "payback_status": "opex_only_positive"
+          }
+        }
       },
       "error": null
     },
@@ -102,9 +128,11 @@
       }
     },
     "financials": {
+      "capex_gbp": 0,
       "annual_benefit_gbp": 425833,
       "incremental_annual_cost_gbp": 95000,
-      "net_annual_benefit_gbp": 330833
+      "net_annual_benefit_gbp": 330833,
+      "annual_value_gbp": 330833
     }
   }
 }

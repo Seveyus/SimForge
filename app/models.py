@@ -449,11 +449,53 @@ class SimulationRequest(ContractModel):
     rollout_count: int = Field(default=1, gt=0)
 
 
+class ScenarioEconomics(ContractModel):
+    """Confirmed costs for one intervention.
+
+    ``annual_opex_delta_gbp`` is signed: a negative value represents an annual
+    saving. Capital spend and per-event logistics costs cannot be negative.
+    All three values are required when financial comparison is enabled so the
+    decision layer never fills a missing user input with a demo assumption.
+    """
+
+    capex_gbp: float = Field(ge=0)
+    annual_opex_delta_gbp: float
+    cost_per_collection_gbp: float = Field(ge=0)
+
+    @field_validator(
+        "capex_gbp", "annual_opex_delta_gbp", "cost_per_collection_gbp"
+    )
+    @classmethod
+    def scenario_economics_must_be_finite(cls, value: float) -> float:
+        if not isfinite(value):
+            raise ValueError("scenario economics must be finite")
+        return value
+
+
+class ComparisonEconomics(ContractModel):
+    """Confirmed operation-wide inputs used by every scenario."""
+
+    value_per_unit_gbp: float = Field(ge=0)
+    capex_amortisation_years: float = Field(gt=0)
+    baseline_cost_per_outbound_event_gbp: float = Field(ge=0)
+
+    @field_validator(
+        "value_per_unit_gbp",
+        "capex_amortisation_years",
+        "baseline_cost_per_outbound_event_gbp",
+    )
+    @classmethod
+    def comparison_economics_must_be_finite(cls, value: float) -> float:
+        if not isfinite(value):
+            raise ValueError("comparison economics must be finite")
+        return value
+
+
 class ScenarioDefinition(ContractModel):
     id: str = Field(pattern=r"^[a-z][a-z0-9_-]*$")
     label: str = Field(min_length=1)
     parameter_overrides: dict[str, ScalarValue] = Field(min_length=1)
-    economics: dict[str, NumericValue] | None = None
+    economics: ScenarioEconomics | None = None
 
     @field_validator("parameter_overrides")
     @classmethod
@@ -464,19 +506,6 @@ class ScenarioDefinition(ContractModel):
             _validate_parameter_key(key)
             _ensure_finite(value, field_name=key)
         return overrides
-
-    @field_validator("economics")
-    @classmethod
-    def validate_economics(
-        cls, economics: dict[str, NumericValue] | None
-    ) -> dict[str, NumericValue] | None:
-        if economics is not None:
-            for key, value in economics.items():
-                _validate_parameter_key(key)
-                if not _is_number(value) or not isfinite(value) or value < 0:
-                    raise ValueError(f"economic value {key} must be a non-negative number")
-        return economics
-
 
 class ScenarioSuggestionRequest(ContractModel):
     model_spec: ModelSpec
@@ -505,6 +534,7 @@ class ScenarioSuggestions(ContractModel):
 class ScenarioComparisonRequest(ContractModel):
     model_spec: ModelSpec
     scenarios: list[ScenarioDefinition] = Field(min_length=1)
+    economics: ComparisonEconomics | None = None
     seed: int | None = None
     rollout_count: int = Field(default=1, gt=0)
 
@@ -513,6 +543,21 @@ class ScenarioComparisonRequest(ContractModel):
         scenario_ids = [scenario.id for scenario in self.scenarios]
         if len(scenario_ids) != len(set(scenario_ids)):
             raise ValueError("scenario ids must be unique")
+        supplied_scenario_economics = [
+            scenario.economics is not None for scenario in self.scenarios
+        ]
+        if self.economics is not None and not all(supplied_scenario_economics):
+            raise ValueError(
+                "every scenario requires economics when comparison economics are supplied"
+            )
+        if (
+            self.model_spec.material is not None
+            and any(supplied_scenario_economics)
+            and self.economics is None
+        ):
+            raise ValueError(
+                "comparison economics are required for financial ranking"
+            )
         return self
 
 

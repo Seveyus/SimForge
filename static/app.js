@@ -10,6 +10,26 @@ const BASELINE_OPTIONS = Object.freeze({
   rollout_count: 100,
 });
 
+const EMPTY_FINANCE_INPUTS = Object.freeze({
+  value_per_unit_gbp: "",
+  capex_amortisation_years: "",
+  baseline_cost_per_outbound_event_gbp: "",
+});
+
+const EMPTY_SCENARIO_ECONOMICS = Object.freeze({
+  capex_gbp: "",
+  annual_opex_delta_gbp: "",
+  cost_per_collection_gbp: "",
+});
+
+const PRESENTATION_LABELS = Object.freeze({
+  capex_gbp: "CAPEX",
+  incremental_annual_cost_gbp: "Annual OPEX change",
+  annual_opex_delta_gbp: "Annual OPEX change",
+  annual_value_gbp: "Annual value",
+  payback_years: "Payback",
+});
+
 const EXAMPLE_DESCRIPTIONS = Object.freeze({
   co2: "We produce around one tonne of CO₂ per hour. We have two 45-tonne storage tanks and normally one 24-tonne tanker collection per day. Our objective is to minimise lost production.",
   water: "Process water enters a holding system at 12 cubic metres per hour. We have two 180-cubic-metre tanks and remove up to 200 cubic metres once per day. Our objective is to minimise lost process output when removal is disrupted.",
@@ -47,6 +67,8 @@ const state = {
   suggestionPhase: "locked",
   suggestions: [],
   suggestionError: null,
+  financeEnabled: false,
+  financeInputs: { ...EMPTY_FINANCE_INPUTS },
   baselinePhase: "locked",
   baselineResult: null,
   baselineError: null,
@@ -128,6 +150,14 @@ const elements = {
   executionNote: document.querySelector("#execution-note"),
   comparisonEmpty: document.querySelector("#comparison-empty"),
   scenarioPlan: document.querySelector("#scenario-plan"),
+  financialInputsPanel: document.querySelector("#financial-inputs-panel"),
+  includeEconomics: document.querySelector("#include-economics"),
+  financialGlobalFields: document.querySelector("#financial-global-fields"),
+  financialInputNote: document.querySelector("#financial-input-note"),
+  valuePerUnitGbp: document.querySelector("#value-per-unit-gbp"),
+  valuePerUnitLabel: document.querySelector("#value-per-unit-label"),
+  capexAmortisationYears: document.querySelector("#capex-amortisation-years"),
+  baselineOutboundCostGbp: document.querySelector("#baseline-outbound-cost-gbp"),
   suggestScenarios: document.querySelector("#suggest-scenarios"),
   comparisonEmptyTitle: document.querySelector("#comparison-empty-title"),
   comparisonEmptyCopy: document.querySelector("#comparison-empty-copy"),
@@ -178,6 +208,42 @@ function humanise(value) {
   return String(value)
     .replaceAll("_", " ")
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function displayLabel(key) {
+  return PRESENTATION_LABELS[key] ?? humanise(key);
+}
+
+function paybackStatusLabel(status) {
+  if (status === "pays_back") return "Pays back";
+  if (status === "opex_only_positive") return "Immediate — no CAPEX";
+  if (status === "not_viable") return "No payback";
+  return "Not available";
+}
+
+function modelFinanceInputs(modelSpec) {
+  const parameters = modelSpec?.parameters ?? {};
+  const valueFor = (key) => {
+    const value = parameters[key]?.value;
+    return typeof value === "number" && Number.isFinite(value) ? String(value) : "";
+  };
+  return {
+    value_per_unit_gbp: valueFor("value_per_unit_gbp") || valueFor("value_per_tonne_gbp") || valueFor("value_per_tonne"),
+    capex_amortisation_years: valueFor("capex_amortisation_years"),
+    baseline_cost_per_outbound_event_gbp: valueFor("baseline_cost_per_outbound_event_gbp"),
+  };
+}
+
+function initialiseFinanceInputs(modelSpec) {
+  state.financeInputs = modelFinanceInputs(modelSpec);
+  state.financeEnabled = Object.values(state.financeInputs).some((value) => value !== "");
+}
+
+function initialiseScenarioEconomics(scenario) {
+  return {
+    ...scenario,
+    economics: { ...EMPTY_SCENARIO_ECONOMICS },
+  };
 }
 
 function formatNumber(value) {
@@ -505,7 +571,9 @@ async function runSuggestions() {
   state.suggestionError = null;
   render();
   try {
-    state.suggestions = deepClone(validateSuggestions(await requestSuggestions(state.modelSpec)));
+    state.suggestions = deepClone(
+      validateSuggestions(await requestSuggestions(state.modelSpec)).map(initialiseScenarioEconomics),
+    );
     state.suggestionPhase = "ready";
   } catch (error) {
     state.suggestions = [];
@@ -621,6 +689,64 @@ async function runComparison(payload) {
   }
 }
 
+function readRequiredFinancialNumber(input, label, { min = null, strictlyPositive = false } = {}) {
+  input.setCustomValidity("");
+  const raw = input.value.trim();
+  const value = Number(raw);
+  let message = "";
+  if (raw === "" || !Number.isFinite(value)) {
+    message = `${label} is required for financial ranking.`;
+  } else if (strictlyPositive && value <= 0) {
+    message = `${label} must be greater than zero.`;
+  } else if (min !== null && value < min) {
+    message = `${label} must be at least ${min}.`;
+  }
+  if (message) {
+    input.setCustomValidity(message);
+    input.reportValidity();
+    return null;
+  }
+  return value;
+}
+
+function buildFinancialComparisonPayload() {
+  if (!state.financeEnabled) return null;
+  const valuePerUnit = readRequiredFinancialNumber(elements.valuePerUnitGbp, "Value per unit", { min: 0 });
+  if (valuePerUnit === null) return undefined;
+  const amortisationYears = readRequiredFinancialNumber(elements.capexAmortisationYears, "CAPEX amortisation", { strictlyPositive: true });
+  if (amortisationYears === null) return undefined;
+  const baselineOutboundCost = readRequiredFinancialNumber(elements.baselineOutboundCostGbp, "Baseline outbound cost", { min: 0 });
+  if (baselineOutboundCost === null) return undefined;
+
+  const scenarioEconomics = [];
+  const fieldDefinitions = [
+    ["capex_gbp", "CAPEX", { min: 0 }],
+    ["annual_opex_delta_gbp", "Annual OPEX change", {}],
+    ["cost_per_collection_gbp", "Outbound cost", { min: 0 }],
+  ];
+  for (let index = 0; index < state.suggestions.length; index += 1) {
+    const economics = {};
+    for (const [key, label, constraints] of fieldDefinitions) {
+      const input = elements.scenarioPlan.querySelector(
+        `[data-scenario-index="${index}"][data-economics-key="${key}"]`,
+      );
+      const value = readRequiredFinancialNumber(input, `${state.suggestions[index].label}: ${label}`, constraints);
+      if (value === null) return undefined;
+      economics[key] = value;
+    }
+    scenarioEconomics.push(economics);
+  }
+
+  return {
+    economics: {
+      value_per_unit_gbp: valuePerUnit,
+      capex_amortisation_years: amortisationYears,
+      baseline_cost_per_outbound_event_gbp: baselineOutboundCost,
+    },
+    scenarioEconomics,
+  };
+}
+
 function validateRequirementsResponse(response) {
   if (!response || !["needs_clarification", "ready"].includes(response.status)) {
     throw new Error("The server returned an unsupported requirements state.");
@@ -649,6 +775,8 @@ async function runRequirements(payload) {
   state.suggestionPhase = "locked";
   state.suggestions = [];
   state.suggestionError = null;
+  state.financeEnabled = false;
+  state.financeInputs = { ...EMPTY_FINANCE_INPUTS };
   state.busy = true;
   state.error = null;
   state.lastPayload = deepClone(payload);
@@ -670,6 +798,7 @@ async function runRequirements(payload) {
       state.phase = "ready";
       state.draftSpec = null;
       state.modelSpec = response.model_spec;
+      initialiseFinanceInputs(state.modelSpec);
     }
   } catch (error) {
     state.phase = "error";
@@ -1291,6 +1420,37 @@ function renderBaseline() {
   }
 }
 
+function createScenarioFinancialField(scenario, index, key, label, { min } = {}) {
+  const field = createElement("label", "scenario-financial-field", label);
+  const input = createElement("input");
+  input.type = "number";
+  input.step = "any";
+  input.required = true;
+  input.inputMode = "decimal";
+  if (min !== undefined) input.min = String(min);
+  input.value = scenario.economics?.[key] ?? "";
+  input.dataset.scenarioIndex = String(index);
+  input.dataset.economicsKey = key;
+  input.setAttribute("aria-label", `${scenario.label}: ${label}`);
+  field.append(input);
+  return field;
+}
+
+function renderFinancialInputs() {
+  const available = state.suggestionPhase === "ready" && state.suggestions.length > 0;
+  elements.financialInputsPanel.hidden = !available;
+  if (!available) return;
+
+  elements.includeEconomics.checked = state.financeEnabled;
+  elements.financialGlobalFields.hidden = !state.financeEnabled;
+  elements.financialInputNote.hidden = !state.financeEnabled;
+  elements.valuePerUnitGbp.value = state.financeInputs.value_per_unit_gbp;
+  elements.capexAmortisationYears.value = state.financeInputs.capex_amortisation_years;
+  elements.baselineOutboundCostGbp.value = state.financeInputs.baseline_cost_per_outbound_event_gbp;
+  const quantityUnit = state.modelSpec?.material?.quantity_unit?.replaceAll("_", " ") ?? "tonnes";
+  elements.valuePerUnitLabel.textContent = `GBP / ${quantityUnit}`;
+}
+
 function renderScenarioPlan() {
   clear(elements.scenarioPlan);
   if (state.suggestionPhase === "loading") {
@@ -1330,6 +1490,16 @@ function renderScenarioPlan() {
       overrides.append(row);
     }
     item.append(overrides);
+    if (state.financeEnabled) {
+      const financialFields = createElement("div", "scenario-financial-fields");
+      financialFields.append(
+        createElement("p", "section-kicker", "Confirmed scenario economics"),
+        createScenarioFinancialField(scenario, index, "capex_gbp", "CAPEX (GBP)", { min: 0 }),
+        createScenarioFinancialField(scenario, index, "annual_opex_delta_gbp", "Fixed annual OPEX change (GBP / year)"),
+        createScenarioFinancialField(scenario, index, "cost_per_collection_gbp", "Outbound cost (GBP / event)", { min: 0 }),
+      );
+      item.append(financialFields);
+    }
     elements.scenarioPlan.append(item);
   });
 }
@@ -1386,8 +1556,15 @@ function renderRecommendation(recommendation, scenarios) {
   for (const [key, value] of financialEntries) {
     const item = createElement("div", "financial-item");
     const presented = presentNumericValue(key, value);
-    item.append(createElement("p", "financial-label", humanise(key)));
+    item.append(createElement("p", "financial-label", displayLabel(key)));
     item.append(createElement("span", "financial-value", `${presented.display}${presented.unit ? ` ${presented.unit}` : ""}`));
+    elements.recommendationFinancials.append(item);
+  }
+  const recommendedFinancial = recommendedRun?.result?.metadata?.financial;
+  if (recommendedFinancial && recommendedFinancial.payback_years == null) {
+    const item = createElement("div", "financial-item");
+    item.append(createElement("p", "financial-label", "Payback"));
+    item.append(createElement("span", "financial-value", paybackStatusLabel(recommendedFinancial.payback_status)));
     elements.recommendationFinancials.append(item);
   }
   renderRecommendationAssumptions();
@@ -1401,6 +1578,7 @@ function metricKeysForRuns(runs) {
   }
   const genericPresent = keys.has("lost_output");
   const legacyAliases = new Set(["lost_production_t", "p95_lost_production_t", "total_production_t", "potential_production_t", "collected_t", "total_capacity_t", "final_storage_t", "tank_utilisation"]);
+  if (runs.some((run) => run.result?.metadata?.financial)) keys.add("payback_years");
   return [...keys].filter((key) => !genericPresent || !legacyAliases.has(key)).sort();
 }
 
@@ -1432,7 +1610,7 @@ function renderComparisonTable(baseline, scenarios, recommendation) {
 
   for (const key of metricKeys) {
     const row = createElement("tr");
-    const label = createElement("th", "", humanise(key));
+    const label = createElement("th", "", displayLabel(key));
     label.scope = "row";
     row.append(label);
     for (const run of runs) {
@@ -1440,7 +1618,10 @@ function renderComparisonTable(baseline, scenarios, recommendation) {
       const cell = createElement("td", isRecommended ? "is-recommended" : "");
       const value = run.status === "completed" ? run.result.metrics[key] : undefined;
       if (value === undefined) {
-        cell.textContent = "—";
+        const financial = run.status === "completed" ? run.result.metadata?.financial : null;
+        cell.textContent = key === "payback_years" && financial
+          ? paybackStatusLabel(financial.payback_status)
+          : "—";
       } else {
         const presented = presentNumericValue(key, value);
         cell.textContent = `${presented.display}${presented.unit ? ` ${presented.unit}` : ""}`;
@@ -1538,6 +1719,7 @@ function renderComparison() {
   elements.comparisonError.hidden = phase !== "error";
   elements.comparisonContent.hidden = phase !== "ready";
   renderScenarioPlan();
+  renderFinancialInputs();
   elements.suggestScenarios.disabled = !state.approved || state.suggestionPhase === "loading" || state.comparisonPhase === "loading";
   elements.suggestScenarios.textContent = state.suggestionPhase === "loading"
     ? "Generating ideas…"
@@ -1576,7 +1758,12 @@ function renderComparison() {
     const failedCount = scenarios.length - completedCount;
     elements.comparisonStatus.textContent = "Completed";
     elements.comparisonStatus.className = "review-state is-ready";
-    elements.comparisonMetadata.textContent = `${completedCount} completed · ${failedCount} failed`;
+    const rankingMode = baseline.result.metadata?.ranking_mode;
+    const modeLabel = rankingMode ? ` · ${rankingMode} ranking` : "";
+    elements.comparisonMetadata.textContent = `${completedCount} completed · ${failedCount} failed${modeLabel}`;
+    elements.comparisonNoRecommendation.textContent = rankingMode === "financial"
+      ? "No intervention has positive annual value with the supplied economics. Review the full financial comparison below."
+      : "The backend did not supply a recommendation for these runs.";
     renderExecution(baseline, scenarios);
     renderRecommendation(recommendation, scenarios);
     renderComparisonTable(baseline, scenarios, recommendation);
@@ -1615,6 +1802,8 @@ function resetWorkspace({ preserveDescription = false } = {}) {
     suggestionPhase: "locked",
     suggestions: [],
     suggestionError: null,
+    financeEnabled: false,
+    financeInputs: { ...EMPTY_FINANCE_INPUTS },
     baselinePhase: "locked",
     baselineResult: null,
     baselineError: null,
@@ -1824,9 +2013,18 @@ elements.chartLegend.addEventListener("click", (event) => {
 
 elements.runComparison.addEventListener("click", () => {
   if (!state.modelSpec || state.baselinePhase !== "ready" || state.comparisonPhase !== "idle" || state.suggestionPhase !== "ready") return;
+  const financial = buildFinancialComparisonPayload();
+  if (financial === undefined) return;
+  const scenarios = deepClone(state.suggestions).map(({ id, label, parameter_overrides }, index) => ({
+    id,
+    label,
+    parameter_overrides,
+    ...(financial ? { economics: financial.scenarioEconomics[index] } : {}),
+  }));
   runComparison({
     model_spec: deepClone(state.modelSpec),
-    scenarios: deepClone(state.suggestions).map(({ id, label, parameter_overrides }) => ({ id, label, parameter_overrides })),
+    scenarios,
+    ...(financial ? { economics: financial.economics } : {}),
     ...BASELINE_OPTIONS,
   });
 });
@@ -1842,7 +2040,27 @@ elements.scenarioPlan.addEventListener("input", (event) => {
     const value = Number(event.target.value);
     if (Number.isFinite(value)) scenario.parameter_overrides[event.target.dataset.overrideKey] = value;
   }
+  if (event.target.dataset.economicsKey) {
+    event.target.setCustomValidity("");
+    scenario.economics[event.target.dataset.economicsKey] = event.target.value;
+  }
 });
+
+elements.includeEconomics.addEventListener("change", () => {
+  state.financeEnabled = elements.includeEconomics.checked;
+  render();
+});
+
+for (const [input, key] of [
+  [elements.valuePerUnitGbp, "value_per_unit_gbp"],
+  [elements.capexAmortisationYears, "capex_amortisation_years"],
+  [elements.baselineOutboundCostGbp, "baseline_cost_per_outbound_event_gbp"],
+]) {
+  input.addEventListener("input", () => {
+    input.setCustomValidity("");
+    state.financeInputs[key] = input.value;
+  });
+}
 
 elements.retryComparison.addEventListener("click", () => {
   if (state.lastComparisonPayload) runComparison(state.lastComparisonPayload);

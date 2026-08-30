@@ -15,6 +15,7 @@ import pytest
 from app.api_contract import (
     ECONOMICS_BY_OVERRIDE,
     config_key_for,
+    comparison_economics_to_internal,
     default_economics,
     model_spec_to_config,
     model_spec_to_finance_config,
@@ -101,6 +102,29 @@ def test_finance_parameters_are_picked_out_of_the_model_spec():
     assert model_spec_to_finance_config(spec) == {"value_per_tonne_gbp": 220.0}
 
 
+def test_neutral_finance_parameter_alias_is_picked_out_of_the_model_spec():
+    spec = {"parameters": {"value_per_unit_gbp": {"value": 27.5}}}
+    assert model_spec_to_finance_config(spec) == {"value_per_tonne_gbp": 27.5}
+
+
+def test_confirmed_comparison_economics_map_without_demo_defaults():
+    finance_config, baseline = comparison_economics_to_internal({
+        "value_per_unit_gbp": 27.5,
+        "capex_amortisation_years": 8,
+        "baseline_cost_per_outbound_event_gbp": 90,
+    })
+    assert finance_config == {
+        "value_per_tonne_gbp": 27.5,
+        "capex_amortisation_years": 8,
+    }
+    assert baseline == {
+        "capex_gbp": 0.0,
+        "annual_opex_delta_gbp": 0.0,
+        "cost_per_collection_gbp": 90,
+        "source": "user",
+    }
+
+
 def test_plain_values_are_accepted_as_well_as_provenance_dicts():
     assert model_spec_to_config({"parameters": {"tank_count": 4}})["tank_count"] == 4
 
@@ -154,6 +178,7 @@ def test_explicit_economics_win_over_the_inferred_default():
                        "cost_per_collection_gbp": 400.0}}
     ])
     assert scenarios[0]["economics"]["capex_gbp"] == 1.0
+    assert scenarios[0]["economics"]["source"] == "user"
 
 
 # --------------------------------------------------------------------------
@@ -372,6 +397,33 @@ def test_requirements_agent_extracts_supported_presets(unit, material):
     }
 
 
+def test_requirements_agent_extracts_only_explicit_global_economics():
+    extraction = {
+        "objective": "minimise lost output", "material_name": "process water",
+        "quantity_unit": "cubic_metres", "simulation_days": 5,
+        "timestep_minutes": 10, "inflow_rate": {"value": 8},
+        "buffer_count": {"value": 2}, "buffer_capacity": {"value": 100},
+        "outbound_events_per_day": {"value": 1},
+        "outbound_capacity": {"value": 120},
+        "missed_collection_probability": {"value": 0.1},
+        "value_per_unit_gbp": {"value": 22},
+        "capex_amortisation_years": {"value": 7},
+        "baseline_cost_per_outbound_event_gbp": {"value": 45},
+    }
+    result = RequirementsAgent(
+        FixtureExtractionClient(extraction), model="fixture"
+    ).build("operation with explicitly stated GBP inputs")
+    parameters = result.model_spec.parameters
+    assert parameters["value_per_unit_gbp"].value == 22
+    assert parameters["value_per_unit_gbp"].unit == "GBP/cubic_metres"
+    assert parameters["capex_amortisation_years"].value == 7
+    assert parameters["baseline_cost_per_outbound_event_gbp"].value == 45
+    assert all(parameters[key].source.value == "user" for key in (
+        "value_per_unit_gbp", "capex_amortisation_years",
+        "baseline_cost_per_outbound_event_gbp",
+    ))
+
+
 def test_scenario_suggestions_are_validated_and_distinct():
     payload = {"suggestions": [
         {"id": "more-buffer", "label": "More buffer", "rationale": "Adds headroom.", "parameter_overrides": {"buffer_count": 3}},
@@ -402,6 +454,44 @@ def test_generic_comparison_uses_operational_ranking_without_financials():
         for name, delta in response["recommendation"]["metric_deltas"].items()
         if name != "failure_probability"
     )
+
+
+def test_generic_comparison_uses_confirmed_financial_inputs_and_reports_outputs():
+    scenarios = [
+        {"id": "more-buffer", "label": "More buffer", "parameter_overrides": {"buffer_count": 3}},
+        {"id": "more-events", "label": "More events", "parameter_overrides": {"outbound_events_per_day": 2}},
+        {"id": "larger-event", "label": "Larger event", "parameter_overrides": {"outbound_capacity": 240}},
+    ]
+    for index, scenario in enumerate(scenarios):
+        scenario["economics"] = {
+            "capex_gbp": 1000 + index * 100,
+            "annual_opex_delta_gbp": -250 if index == 0 else 0,
+            "cost_per_collection_gbp": 10,
+        }
+    response = run_scenario_comparison({
+        "model_spec": generic_spec(), "rollout_count": 8, "seed": 7,
+        "execution": "local", "scenarios": scenarios,
+        "economics": {
+            "value_per_unit_gbp": 1000,
+            "capex_amortisation_years": 5,
+            "baseline_cost_per_outbound_event_gbp": 10,
+        },
+    })
+    metadata = response["baseline"]["result"]["metadata"]
+    assert metadata["ranking_mode"] == "financial"
+    assert metadata["assumptions"]["finance_config"]["value_per_tonne_gbp"] == 1000
+    assert metadata["assumptions"]["baseline_economics"]["source"] == "user"
+    for scenario in response["scenarios"]:
+        metrics = scenario["result"]["metrics"]
+        assert {
+            "capex_gbp", "incremental_annual_cost_gbp", "annual_value_gbp",
+        } <= set(metrics)
+        assert "payback_status" in scenario["result"]["metadata"]["financial"]
+    assert response["recommendation"] is not None
+    assert {
+        "capex_gbp", "incremental_annual_cost_gbp", "annual_value_gbp",
+        "payback_years",
+    } <= set(response["recommendation"]["financials"])
 
 
 # --------------------------------------------------------------------------

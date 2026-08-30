@@ -8,7 +8,7 @@
       content="Turn an operational description into a transparent, executable model."
     >
     <title>SimForge — AI Modelling Workspace</title>
-    <link rel="stylesheet" href="./styles.css?v=12">
+    <link rel="stylesheet" href="./styles.css?v=13">
   </head>
   <body>
     <a class="skip-link" href="#workspace">Skip to workspace</a>
@@ -383,6 +383,45 @@
 
         <div class="comparison-empty" id="comparison-empty">
           <div class="scenario-plan" id="scenario-plan" aria-label="Scenarios to compare"></div>
+          <section class="financial-inputs-panel" id="financial-inputs-panel" aria-labelledby="financial-inputs-heading" hidden>
+            <div class="financial-inputs-heading">
+              <div>
+                <p class="section-kicker">Optional decision inputs</p>
+                <h3 id="financial-inputs-heading">Add confirmed economics</h3>
+                <p>Enable financial ranking only when these values are known. SimForge will not estimate missing costs.</p>
+              </div>
+              <label class="financial-mode-toggle" for="include-economics">
+                <input id="include-economics" type="checkbox">
+                <span>Include economics</span>
+              </label>
+            </div>
+            <div class="financial-global-fields" id="financial-global-fields" hidden>
+              <label>
+                Value per unit
+                <span class="input-with-unit">
+                  <input id="value-per-unit-gbp" type="number" min="0" step="any" inputmode="decimal">
+                  <span id="value-per-unit-label">GBP / unit</span>
+                </span>
+              </label>
+              <label>
+                CAPEX amortisation
+                <span class="input-with-unit">
+                  <input id="capex-amortisation-years" type="number" min="0.000001" step="any" inputmode="decimal">
+                  <span>years</span>
+                </span>
+              </label>
+              <label>
+                Baseline outbound cost
+                <span class="input-with-unit">
+                  <input id="baseline-outbound-cost-gbp" type="number" min="0" step="any" inputmode="decimal">
+                  <span>GBP / event</span>
+                </span>
+              </label>
+            </div>
+            <p class="financial-input-note" id="financial-input-note" hidden>
+              Complete the operation-wide values and each scenario’s CAPEX, annual OPEX change, and outbound-event cost.
+            </p>
+          </section>
           <div class="comparison-empty-action">
             <div>
               <h3 id="comparison-empty-title">Complete the baseline first</h3>
@@ -489,6 +528,6 @@
     </div>
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <script type="module" src="./app.js?v=12"></script>
+    <script type="module" src="./app.js?v=13"></script>
   </body>
 </html>

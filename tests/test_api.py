@@ -215,6 +215,78 @@ def test_a_bad_parameter_value_is_a_422(client):
     assert any("simulation_days" in f["path"] for f in error["field_errors"])
 
 
+def test_financial_context_requires_complete_scenario_economics(client):
+    payload = compare_payload()
+    payload["economics"] = {
+        "value_per_unit_gbp": 150,
+        "capex_amortisation_years": 10,
+        "baseline_cost_per_outbound_event_gbp": 400,
+    }
+    payload["scenarios"][0]["economics"] = {
+        "capex_gbp": 1000,
+        "annual_opex_delta_gbp": 0,
+        "cost_per_collection_gbp": 400,
+    }
+    error = assert_error_envelope(
+        client.post(COMPARE, json=payload), "validation_error"
+    )
+    assert any("every scenario requires economics" in f["message"] for f in error["field_errors"])
+
+
+def test_route_forwards_complete_confirmed_economics(client):
+    payload = compare_payload(rollout_count=8)
+    payload["economics"] = {
+        "value_per_unit_gbp": 1000,
+        "capex_amortisation_years": 5,
+        "baseline_cost_per_outbound_event_gbp": 400,
+    }
+    for index, scenario in enumerate(payload["scenarios"]):
+        scenario["economics"] = {
+            "capex_gbp": 1000 + index * 100,
+            "annual_opex_delta_gbp": -500 if index == 0 else 0,
+            "cost_per_collection_gbp": 400,
+        }
+    response = client.post(COMPARE, json=payload)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    metadata = body["baseline"]["result"]["metadata"]
+    assert metadata["ranking_mode"] == "financial"
+    assert metadata["assumptions"]["finance_config"]["value_per_tonne_gbp"] == 1000
+    assert metadata["assumptions"]["baseline_economics"]["source"] == "user"
+    assert all(
+        "annual_value_gbp" in scenario["result"]["metrics"]
+        for scenario in body["scenarios"] if scenario["status"] == "completed"
+    )
+
+
+def test_scenario_economics_allow_opex_savings_but_not_negative_capex(client):
+    payload = compare_payload()
+    for scenario in payload["scenarios"]:
+        scenario["economics"] = {
+            "capex_gbp": 1000,
+            "annual_opex_delta_gbp": -500,
+            "cost_per_collection_gbp": 400,
+        }
+    payload["scenarios"][0]["economics"]["capex_gbp"] = -1
+    error = assert_error_envelope(
+        client.post(COMPARE, json=payload), "validation_error"
+    )
+    assert any("capex_gbp" in f["path"] for f in error["field_errors"])
+
+
+def test_non_finite_financial_inputs_are_rejected(client):
+    payload = compare_payload()
+    payload["economics"] = {
+        "value_per_unit_gbp": "Infinity",
+        "capex_amortisation_years": 10,
+        "baseline_cost_per_outbound_event_gbp": 400,
+    }
+    error = assert_error_envelope(
+        client.post(COMPARE, json=payload), "validation_error"
+    )
+    assert any("value_per_unit_gbp" in f["path"] for f in error["field_errors"])
+
+
 def test_an_override_the_simulator_cannot_model_is_a_422(client):
     payload = compare_payload()
     payload["scenarios"][0]["parameter_overrides"] = {"number_of_lorries": 3}

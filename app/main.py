@@ -209,6 +209,11 @@ def create_app() -> FastAPI:
             {
                 "model_spec": validated.model_spec.model_dump(mode="json"),
                 "scenarios": [s.model_dump(mode="json") for s in validated.scenarios],
+                "economics": (
+                    validated.economics.model_dump(mode="json")
+                    if validated.economics is not None
+                    else None
+                ),
                 "seed": validated.seed,
                 "rollout_count": validated.rollout_count,
                 "execution": execution_mode(request),

@@ -36,7 +36,7 @@ A model uses one quantity unit throughout: `tonnes`, `kilograms`, `litres`, `cub
 - Local execution or isolated Daytona sandbox execution
 - Three validated and editable AI-suggested interventions
 - Operational ranking when costs are unavailable
-- Financial ranking when usable costs are confirmed
+- Optional user-supplied financial ranking with CAPEX, OPEX change, annual value, and payback
 - Interactive metrics, events, scenario comparison, and selectable chart series
 - Backward-compatible CO₂ parameter aliases and response fields
 
@@ -114,8 +114,10 @@ Without a Gemini key, the simulation API remains usable but live requirements ex
 3. Describe an operation, or select a CO₂, process-water, grain, or custom-process example.
 4. Select **Build model**, answer any clarification questions, and review the extracted values and assumptions.
 5. Select **Approve ModelSpec**, then **Run baseline**.
-6. Select **Generate scenario ideas**, edit the suggested labels or parameter overrides if needed, then select **Compare reviewed scenarios**.
-7. Use the time-series labels above the chart to show or hide individual lines. The accessible data table always retains the complete result.
+6. Select **Generate scenario ideas** and edit the suggested labels or parameter overrides if needed.
+7. To compare economics, enable **Include economics**, then enter the confirmed value per unit, amortisation period, baseline outbound-event cost, and each scenario's CAPEX, fixed annual OPEX change, and outbound-event cost. Leave it disabled for operational ranking.
+8. Select **Compare reviewed scenarios**. Financial outputs are calculated by Python only when every required economic input is present.
+9. Use the time-series labels above the chart to show or hide individual lines. The accessible data table always retains the complete result.
 
 The local web server still uses your configured Gemini and Daytona services when their keys are present. If `DAYTONA_API_KEY` is omitted, baseline and scenario simulations run in the local Python process instead.
 
@@ -217,6 +219,36 @@ Simulation responses preserve the stable shape:
   "metadata": {}
 }
 ```
+
+Financial comparison is optional. When supplied, the comparison request adds
+operation-wide economics and a complete cost set for every scenario:
+
+```json
+{
+  "economics": {
+    "value_per_unit_gbp": 150,
+    "capex_amortisation_years": 10,
+    "baseline_cost_per_outbound_event_gbp": 400
+  },
+  "scenarios": [
+    {
+      "id": "more-buffer",
+      "label": "Add buffer capacity",
+      "parameter_overrides": {"buffer_count": 3},
+      "economics": {
+        "capex_gbp": 80000,
+        "annual_opex_delta_gbp": 1500,
+        "cost_per_collection_gbp": 400
+      }
+    }
+  ]
+}
+```
+
+`annual_opex_delta_gbp` is signed, so a negative value represents an annual
+saving. SimForge does not fill incomplete financial requests with demo cost
+assumptions. Without a complete financial context, generic models retain the
+deterministic operational ranking.
 
 Scenario comparison responses contain:
 

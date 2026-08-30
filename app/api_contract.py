@@ -54,7 +54,12 @@ PARAMETER_ALIASES: dict[str, str] = {
 FINANCE_ALIASES: dict[str, str] = {
     "value_per_tonne": "value_per_tonne_gbp",
     "value_per_tonne_gbp": "value_per_tonne_gbp",
+    "value_per_unit": "value_per_tonne_gbp",
+    "value_per_unit_gbp": "value_per_tonne_gbp",
     "capex_amortisation_years": "capex_amortisation_years",
+    # Kept here so extraction provenance recognises it as a financial input;
+    # it is mapped separately onto baseline economics at comparison time.
+    "baseline_cost_per_outbound_event_gbp": "baseline_cost_per_outbound_event_gbp",
 }
 
 #: Default economics inferred from *which* parameter an intervention changes.
@@ -109,7 +114,7 @@ def unmapped_parameters(model_spec: dict[str, Any] | None) -> list[str]:
     return sorted(
         name
         for name in (model_spec.get("parameters") or {})
-        if config_key_for(name) is None
+        if config_key_for(name) is None and name not in FINANCE_ALIASES
     )
 
 
@@ -121,6 +126,31 @@ def model_spec_to_finance_config(model_spec: dict[str, Any] | None) -> dict[str,
         if key and key in DEFAULT_FINANCE_CONFIG:
             finance_config[key] = param["value"] if isinstance(param, dict) else param
     return finance_config
+
+
+def comparison_economics_to_internal(
+    economics: dict[str, Any] | None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Map neutral, user-facing economics onto the legacy finance kernel.
+
+    The calculation layer still uses ``tonne`` and ``collection`` in its stable
+    internal keys. The API deliberately speaks in material-neutral terms.
+    """
+    if not economics:
+        return None, None
+    finance_config = {
+        "value_per_tonne_gbp": economics["value_per_unit_gbp"],
+        "capex_amortisation_years": economics["capex_amortisation_years"],
+    }
+    baseline_economics = {
+        "capex_gbp": 0.0,
+        "annual_opex_delta_gbp": 0.0,
+        "cost_per_collection_gbp": economics[
+            "baseline_cost_per_outbound_event_gbp"
+        ],
+        "source": "user",
+    }
+    return finance_config, baseline_economics
 
 
 def overrides_to_config_keys(overrides: dict[str, Any] | None) -> dict[str, Any]:
@@ -160,6 +190,9 @@ def request_to_scenarios(
     out: list[dict[str, Any]] = []
     for scenario in scenarios or []:
         overrides = overrides_to_config_keys(scenario.get("parameter_overrides"))
+        explicit_economics = scenario.get("economics")
+        if explicit_economics:
+            explicit_economics = {**explicit_economics, "source": "user"}
         out.append(
             {
                 "name": scenario["id"],
@@ -168,7 +201,7 @@ def request_to_scenarios(
                 # echoed back verbatim in the response: the caller should see the
                 # names it sent, not our internal unit-suffixed keys
                 "parameter_overrides": dict(scenario.get("parameter_overrides") or {}),
-                "economics": scenario.get("economics") or (
+                "economics": explicit_economics or (
                     default_economics(overrides) if use_demo_economics else None
                 ),
             }
@@ -573,6 +606,12 @@ def run_scenario_comparison(request: dict[str, Any]) -> dict[str, Any]:
     scenarios = request_to_scenarios(
         request.get("scenarios"), use_demo_economics=not bool((model_spec or {}).get("material"))
     )
+    supplied_finance_config, baseline_economics = comparison_economics_to_internal(
+        request.get("economics")
+    )
+    finance_config = model_spec_to_finance_config(model_spec)
+    if supplied_finance_config:
+        finance_config.update(supplied_finance_config)
 
     comparison = run_decision_pipeline(
         base_config=config,
@@ -581,7 +620,8 @@ def run_scenario_comparison(request: dict[str, Any]) -> dict[str, Any]:
         base_seed=int(request.get("seed") if request.get("seed") is not None
                       else DEFAULT_BASE_SEED),
         execution=request.get("execution", "auto"),
-        finance_config=model_spec_to_finance_config(model_spec) or None,
+        finance_config=finance_config or None,
+        baseline_economics=baseline_economics,
         include_representative_run=True,
         tolerate_failures=True,
     )
