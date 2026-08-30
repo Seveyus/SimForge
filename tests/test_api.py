@@ -278,11 +278,22 @@ def test_request_id_is_echoed_when_supplied(client):
 # Requirements route (owned by the AI half)
 # --------------------------------------------------------------------------
 
-def test_requirements_reports_unavailable_until_the_agent_lands(client):
-    """A stub success would let the frontend build against a fake happy path."""
+def test_requirements_reports_unavailable_when_the_agent_is_absent(client, monkeypatch):
+    """A stub success would let the frontend build against a fake happy path.
+
+    The module is hidden rather than genuinely absent, so this never depends on
+    which branch is checked out - and never makes a live Gemini call. No test in
+    this suite should need network or burn provider quota.
+    """
+    import app.main as main
+
+    def hide(name):
+        if name == "app.requirements_agent":
+            raise ImportError("hidden for this test")
+        return importlib.import_module(name)
+
+    monkeypatch.setattr(main.importlib, "import_module", hide)
     response = client.post("/api/requirements", json=fixture("requirements-request"))
-    if response.status_code == 200:
-        pytest.skip("requirements_agent is implemented")
     assert_error_envelope(response, "gemini_unavailable")
 
 
@@ -373,6 +384,7 @@ def test_deep_health_says_when_daytona_is_not_configured(client, monkeypatch):
 # so the route is proven against that contract before the branches meet.
 # --------------------------------------------------------------------------
 
+import importlib
 import sys
 import types
 
