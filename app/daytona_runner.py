@@ -53,6 +53,7 @@ quietly hand back numbers from a different set of futures.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import time
@@ -86,6 +87,54 @@ VM_SNAPSHOTS: tuple[str, ...] = (
     "daytona-vm",
     "daytona-vm-medium",
 )
+
+#: Base image for the pre-baked snapshot. Pinned to the same Python minor the
+#: repo develops against, so a sandbox result is trivially comparable to local.
+SNAPSHOT_BASE_PYTHON = "3.12"
+SNAPSHOT_PREFIX = "simforge"
+
+
+def model_files_digest() -> str:
+    """Content hash of everything baked into the snapshot.
+
+    The digest goes in the snapshot's name, which is the safety property that
+    makes pre-baking sound: edit the simulator and the name changes, so a stale
+    snapshot can never be picked up and silently run different code than the
+    host validated. A missing snapshot falls back to uploading, never to
+    executing something we did not build.
+    """
+    digest = hashlib.blake2b(digest_size=6)
+    for src, dst in MODEL_FILES:
+        digest.update(dst.encode("utf-8"))
+        digest.update(src.read_bytes())
+    return digest.hexdigest()
+
+
+def snapshot_name() -> str:
+    """Name of the snapshot matching the model files on disk right now."""
+    return f"{SNAPSHOT_PREFIX}-{model_files_digest()}"
+
+
+def build_snapshot(client: Any, name: str | None = None,
+                   on_logs: Callable[[str], None] | None = None) -> str:
+    """Build the pre-baked snapshot: the model files inside the image.
+
+    One-off, roughly a minute. Afterwards a scenario sandbox starts in well under
+    a second with nothing to upload, because the operational model is already in
+    the filesystem.
+    """
+    from daytona import CreateSnapshotParams, Image
+
+    name = name or snapshot_name()
+    image = Image.debian_slim(SNAPSHOT_BASE_PYTHON)
+    for src, dst in MODEL_FILES:
+        image = image.add_local_file(str(src.relative_to(REPO_ROOT)), f"{WORKDIR}/{dst}")
+    client.snapshot.create(
+        CreateSnapshotParams(name=name, image=image),
+        on_logs=on_logs or (lambda _m: None),
+        timeout=900,
+    )
+    return name
 
 
 class DaytonaExecutionError(RuntimeError):
@@ -192,6 +241,7 @@ class DaytonaSimulationRunner:
         on_log: Callable[[str], None] | None = None,
         prefer_fork: bool = True,
         vm_snapshots: tuple[str, ...] = VM_SNAPSHOTS,
+        use_prebaked_snapshot: bool = True,
     ) -> None:
         self.api_key = api_key or os.environ.get("DAYTONA_API_KEY")
         self.api_url = api_url or os.environ.get("DAYTONA_API_URL")
@@ -207,6 +257,9 @@ class DaytonaSimulationRunner:
         self.isolation_mode = ISOLATION_NATIVE_FORK if prefer_fork else ISOLATION_INDEPENDENT
         self.fork_unavailable_reason: str | None = None
         self.sandbox_snapshot: str | None = None
+        self.use_prebaked_snapshot = use_prebaked_snapshot
+        self.prebaked_snapshot: str | None = None
+        self._resolved = False
         self.timings: dict[str, float] = {}
 
     # -- lifecycle ------------------------------------------------------
@@ -242,13 +295,63 @@ class DaytonaSimulationRunner:
         VM sandboxes can be forked. Falls back to the default container sandbox,
         recording why, rather than failing the run.
         """
-        from daytona import FileUpload
-
         started = time.perf_counter()
+        self.resolve()
         sandbox = self._create_sandbox("baseline", allow_vm=self.prefer_fork)
         self.timings["create_baseline_s"] = time.perf_counter() - started
 
         started = time.perf_counter()
+        self._upload_model_files(sandbox)
+        self.timings["upload_s"] = time.perf_counter() - started
+        self.baseline_sandbox = sandbox
+        return sandbox
+
+    def resolve(self) -> None:
+        """Work out what this account supports, without provisioning anything.
+
+        Cheap (one API call at most) and idempotent. Splitting it from
+        :meth:`prepare` lets the caller learn that forking is unavailable
+        *before* deciding how to schedule the batch, so the baseline sandbox can
+        be created in parallel with the scenario sandboxes instead of ahead of
+        them.
+        """
+        if self._resolved:
+            return
+        self._resolved = True
+        if self.use_prebaked_snapshot:
+            self._resolve_prebaked_snapshot()
+
+    def _resolve_prebaked_snapshot(self) -> None:
+        """Look for a snapshot whose name matches the current model files.
+
+        Only an exact content match is used. A snapshot built from different
+        code has a different name and is simply not found, so we fall back to
+        uploading rather than running code the host did not validate.
+        """
+        name = os.environ.get("SIMFORGE_SNAPSHOT") or snapshot_name()
+        try:
+            self.client.snapshot.get(name)
+        except Exception as exc:  # noqa: BLE001 - absence is normal, not an error
+            self._log(f"no pre-baked snapshot {name} ({type(exc).__name__}); "
+                      "will upload the model files instead")
+            return
+        self.prebaked_snapshot = name
+        # The pre-baked snapshot is container class, and only VM-class sandboxes
+        # can be forked. Knowing that up front saves a doomed round trip per
+        # scenario, and lets the whole batch run in parallel.
+        self.isolation_mode = ISOLATION_INDEPENDENT
+        self.fork_unavailable_reason = (
+            "pre-baked snapshot is container class; forking requires a VM-class "
+            "sandbox, and no linux-vm runners are configured in this region"
+        )
+        self._log(f"using pre-baked snapshot {name}: nothing to upload")
+
+    def _upload_model_files(self, sandbox: Any) -> None:
+        """Upload the model files, unless the snapshot already contains them."""
+        if self.prebaked_snapshot:
+            return
+        from daytona import FileUpload
+
         self._log(f"uploading {len(MODEL_FILES)} model files")
         sandbox.fs.upload_files(
             [
@@ -256,9 +359,6 @@ class DaytonaSimulationRunner:
                 for src, dst in MODEL_FILES
             ]
         )
-        self.timings["upload_s"] = time.perf_counter() - started
-        self.baseline_sandbox = sandbox
-        return sandbox
 
     def fork(self, name: str) -> Any:
         """Branch the prepared baseline world into an independent sandbox.
@@ -298,7 +398,7 @@ class DaytonaSimulationRunner:
             self._sandboxes.append(sandbox)
             return sandbox
 
-        if allow_vm:
+        if allow_vm and not self.prebaked_snapshot:
             for snapshot in self.vm_snapshots:
                 try:
                     sandbox = create(snapshot=snapshot)
@@ -314,20 +414,19 @@ class DaytonaSimulationRunner:
                 "scenarios will run in independent sandboxes"
             )
 
+        if self.prebaked_snapshot:
+            sandbox = create(snapshot=self.prebaked_snapshot)
+            self.sandbox_snapshot = self.prebaked_snapshot
+            self._log(f"created {role} sandbox from {self.prebaked_snapshot}")
+            return sandbox
+
         sandbox = create(language="python")
         self._log(f"created {role} sandbox (container class)")
         return sandbox
 
     def _create_independent(self, name: str) -> Any:
-        from daytona import FileUpload
-
         sandbox = self._create_sandbox(name)
-        sandbox.fs.upload_files(
-            [
-                FileUpload(source=src.read_bytes(), destination=f"{WORKDIR}/{dst}")
-                for src, dst in MODEL_FILES
-            ]
-        )
+        self._upload_model_files(sandbox)
         return sandbox
 
     def run(self, sandbox: Any, payload: dict[str, Any]) -> dict[str, Any]:
@@ -448,7 +547,10 @@ def fork_and_run_scenarios(
     runner = runner or DaytonaSimulationRunner(on_log=on_log)
     started = time.perf_counter()
     try:
-        if runner.baseline_sandbox is None:
+        # Learn what the account supports first; only provision a baseline
+        # sandbox up front if we are actually going to fork from it.
+        runner.resolve()
+        if runner.baseline_sandbox is None and runner.isolation_mode != ISOLATION_INDEPENDENT:
             runner.prepare()
 
         def payload_for(name: str, config: dict[str, Any]) -> dict[str, Any]:
@@ -460,6 +562,60 @@ def fork_and_run_scenarios(
                 "name": name,
                 "with_representative_run": with_representative_run,
                 "timeseries_stride": timeseries_stride,
+            }
+
+        environments: dict[str, Any] = {}
+
+        def run_in(sandbox: Any, name: str, config: dict[str, Any]) -> dict[str, Any]:
+            parsed = runner.run(sandbox, payload_for(name, config))
+            result = parsed["result"]
+            validate_monte_carlo_result(result, n_runs, base_seed)
+            result["sandbox_id"] = parsed.get("sandbox_id")
+            if parsed.get("environment"):
+                environments.setdefault("sandbox", parsed["environment"])
+            return result
+
+        # When forking is not available there is no reason to serialise on the
+        # baseline: every run provisions its own sandbox anyway, so the whole
+        # batch - baseline included - is created and executed at once.
+        if runner.isolation_mode == ISOLATION_INDEPENDENT:
+            batch_started = time.perf_counter()
+            jobs: list[tuple[str, dict[str, Any]]] = [("baseline", base_config)] + [
+                (s["name"], s["config"]) for s in scenarios
+            ]
+
+            def run_isolated(job: tuple[str, dict[str, Any]]) -> tuple[str, dict[str, Any]]:
+                name, config = job
+                try:
+                    sandbox = (
+                        runner.baseline_sandbox
+                        if name == "baseline" and runner.baseline_sandbox is not None
+                        else runner._create_independent(name)
+                    )
+                    return name, run_in(sandbox, name, config)
+                except Exception as exc:  # noqa: BLE001
+                    # The baseline is load-bearing: without it there is nothing
+                    # to compare against, so its failure is never tolerated.
+                    if not tolerate_failures or name == "baseline":
+                        raise
+                    runner._log(f"scenario {name} failed: {exc}")
+                    return name, {"error": failure_record(exc)}
+
+            with ThreadPoolExecutor(max_workers=max(1, min(max_parallel, len(jobs)))) as pool:
+                results = dict(pool.map(run_isolated, jobs))
+            baseline = results.pop("baseline")
+            runner.timings["batch_exec_s"] = time.perf_counter() - batch_started
+            runner.timings["total_s"] = time.perf_counter() - started
+            return {
+                "baseline": baseline,
+                "scenarios": results,
+                "isolation_mode": runner.isolation_mode,
+                "fork_unavailable_reason": runner.fork_unavailable_reason,
+                "sandbox_snapshot": runner.sandbox_snapshot,
+                "prebaked_snapshot": runner.prebaked_snapshot,
+                "baseline_sandbox_id": baseline.get("sandbox_id"),
+                "environment": environments.get("sandbox"),
+                "timings": dict(runner.timings),
             }
 
         baseline_started = time.perf_counter()
@@ -501,6 +657,7 @@ def fork_and_run_scenarios(
             "isolation_mode": runner.isolation_mode,
             "fork_unavailable_reason": runner.fork_unavailable_reason,
             "sandbox_snapshot": runner.sandbox_snapshot,
+            "prebaked_snapshot": runner.prebaked_snapshot,
             "baseline_sandbox_id": baseline_parsed.get("sandbox_id"),
             "environment": baseline_parsed.get("environment"),
             "timings": dict(runner.timings),

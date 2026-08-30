@@ -331,16 +331,41 @@ Verified against the live API (region `eu`, 2026-08-30):
 
 | | |
 |---|---|
-| Baseline sandbox create + upload | ~3.9 s |
+| Sandbox create (pre-baked snapshot) | ~0.7 s, nothing uploaded |
 | 200 rollouts inside the sandbox | ~0.7 s |
-| 3 scenario sandboxes, in parallel | ~3.0 s |
-| **Full comparison, end to end** | **~8 s** (local: ~2 s) |
-| Sandbox Python | 3.14.4 (local: 3.12.3) |
+| Baseline + 3 scenarios, all in parallel | ~2.8 s |
+| **Full comparison, end to end** | **~4.5 s** (local: ~2 s) |
+| Sandbox Python | 3.12.10 (local: 3.12.3) |
 | Numbers vs local | **bit-identical**, including the representative timeseries |
 | Sandboxes leaked | 0 |
 
 Reproducibility holds across a Python minor-version gap and a different machine,
 which is the point of deriving seeds with `blake2b` rather than `hash()`.
+
+### Pre-baked snapshot
+
+The simulator, the Monte Carlo driver and the sandbox entry point are baked into
+a Daytona snapshot, so a sandbox starts with the operational model already in
+its filesystem and there is nothing to upload:
+
+```bash
+python scripts/build_snapshot.py           # build if missing (~1 min, one-off)
+python scripts/build_snapshot.py --list    # show SimForge snapshots
+python scripts/build_snapshot.py --prune   # delete ones that no longer match
+```
+
+The snapshot's name carries a **content hash of exactly those files**
+(`simforge-572e50b46b55`). Change the simulator and the name changes, so a stale
+snapshot is never silently reused — the runner does not find one and falls back
+to uploading. It can never execute code the host did not validate. Re-run the
+script after changing anything the sandbox runs.
+
+Because the snapshot is container class, and only VM-class sandboxes can fork,
+the runner knows up front that forking is off the table. That lets the baseline
+and every scenario be created and executed **fully in parallel** instead of
+serialising on a baseline that nothing will be forked from.
+
+Together: **8.2 s → ~4.5 s** end to end.
 
 ### On forking
 
@@ -355,12 +380,20 @@ only on VM-class sandboxes; container-class sandboxes return
 422 Unprocessable Entity — "Forking is not supported for this sandbox"
 ```
 
-and no VM snapshot (`daytona-vm-small`, `daytona-vm`, `daytona-vm-medium`, …) is
-provisionable in region `eu` or `us` for this key:
+and no VM sandbox can be provisioned for this account. Three independent checks,
+all pointing the same way:
 
 ```
-400 — "Snapshot daytona-vm-small is not available in region eu"
+400 — "Snapshot daytona-vm-small is not available in region eu"   (also us)
+400 — "No runners are configured in region 'eu' for sandbox class
+       'linux-vm'. Try a different region or sandbox class."       (also us)
 ```
+
+Building our *own* VM-class snapshot fails the same way, and every
+`daytona-vm-*` snapshot lists `region_ids=[]` — no region serves them.
+Creating a snapshot from a running container sandbox also times out, since hot
+snapshots are a VM feature too. So this is a property of the account, not
+something the code can work around.
 
 So the runner detects this once during `prepare()`, then executes **each
 scenario in its own independently provisioned sandbox** and reports:

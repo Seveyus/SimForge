@@ -134,6 +134,7 @@ def run_decision_pipeline(
         "isolation_mode": execution_result["isolation_mode"],
         "fork_unavailable_reason": execution_result.get("fork_unavailable_reason"),
         "sandbox_snapshot": execution_result.get("sandbox_snapshot"),
+        "prebaked_snapshot": execution_result.get("prebaked_snapshot"),
         "baseline_sandbox_id": execution_result.get("baseline_sandbox_id"),
         "sandbox_environment": execution_result.get("environment"),
         "timings": execution_result.get("timings", {}),

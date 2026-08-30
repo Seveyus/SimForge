@@ -45,9 +45,11 @@ SEED = 4242
 class FakeFs:
     def __init__(self, root: Path):
         self.root = root
+        self.uploads: list[str] = []
 
     def upload_files(self, uploads):
         for upload in uploads:
+            self.uploads.append(Path(upload.destination).name)
             dest = self.root / Path(upload.destination).name
             data = upload.source
             dest.write_bytes(data if isinstance(data, bytes) else Path(data).read_bytes())
@@ -74,10 +76,16 @@ class FakeSandbox:
     """Stands in for daytona.Sandbox. `can_fork=False` simulates fork being
     unavailable, which must trigger the honest fallback."""
 
-    def __init__(self, tmp_root: Path, name: str, can_fork: bool = True):
+    def __init__(self, tmp_root: Path, name: str, can_fork: bool = True,
+                 prebaked: bool = False):
         self.id = name
         self.root = tmp_root / name
         self.root.mkdir(parents=True, exist_ok=True)
+        if prebaked:
+            # A sandbox created from the pre-baked snapshot already contains the
+            # model files, exactly as the real image does.
+            for src, dst in MODEL_FILES:
+                (self.root / dst).write_bytes(src.read_bytes())
         self.can_fork = can_fork
         self.deleted = False
         self._tmp_root = tmp_root
@@ -116,15 +124,18 @@ class FakeClient:
     def create(self, params=None, **kwargs):
         snapshot = getattr(params, "snapshot", None)
         self.snapshots_requested.append(snapshot)
-        if snapshot is not None and not self.vm_available:
+        prebaked = bool(snapshot and snapshot.startswith("simforge-"))
+        if snapshot is not None and not prebaked and not self.vm_available:
             raise RuntimeError(f"Snapshot {snapshot} is not available in region eu")
-        return self._make()
+        return self._make(prebaked=prebaked)
 
-    def _make(self):
-        # Unique ids under concurrency, as real sandbox ids are: scenarios are
-        # forked and driven in parallel.
+    def _make(self, prebaked: bool = False):
+        # Unique ids under concurrency, as real sandbox ids are: the batch is
+        # created and driven in parallel.
         with self._lock:
-            sandbox = FakeSandbox(self.tmp_root, f"sbx-{uuid.uuid4().hex[:8]}", self.can_fork)
+            sandbox = FakeSandbox(
+                self.tmp_root, f"sbx-{uuid.uuid4().hex[:8]}", self.can_fork, prebaked
+            )
             self.created.append(sandbox)
         return sandbox
 
@@ -543,3 +554,156 @@ def test_scenarios_are_still_isolated_without_forking(no_vm_runner):
     )
     ids = {out["baseline_sandbox_id"]} | {r["sandbox_id"] for r in out["scenarios"].values()}
     assert len(ids) == 3, "each scenario still gets its own sandbox"
+
+
+# --------------------------------------------------------------------------
+# Pre-baked snapshot
+#
+# Baking the model files into a Daytona snapshot removes the upload step and
+# starts a sandbox in well under a second. The safety property is that the
+# snapshot's name carries a content hash of exactly those files.
+# --------------------------------------------------------------------------
+
+def test_snapshot_name_tracks_the_model_files():
+    from app.daytona_runner import model_files_digest, snapshot_name
+
+    assert snapshot_name() == f"simforge-{model_files_digest()}"
+    assert len(model_files_digest()) == 12
+
+
+def test_editing_a_model_file_changes_the_snapshot_name(tmp_path, monkeypatch):
+    """A stale snapshot must never be reused: different code, different name."""
+    import app.daytona_runner as dr
+
+    original = dr.model_files_digest()
+    edited = tmp_path / "co2_simulation.py"
+    edited.write_text((dr.MODEL_FILES[0][0]).read_text() + "\n# a change\n")
+    monkeypatch.setattr(
+        dr, "MODEL_FILES", ((edited, "co2_simulation.py"),) + dr.MODEL_FILES[1:]
+    )
+    assert dr.model_files_digest() != original
+
+
+def test_a_matching_snapshot_is_used_and_nothing_is_uploaded(tmp_path):
+    from app.daytona_runner import snapshot_name
+
+    runner = DaytonaSimulationRunner(api_key="k")
+    client = FakeClient(tmp_path)
+
+    class FakeSnapshots:
+        def __init__(self):
+            self.requested = []
+
+        def get(self, name):
+            self.requested.append(name)
+            return {"name": name}
+
+    client.snapshot = FakeSnapshots()
+    runner._client = client
+
+    sandbox = runner.prepare()
+    assert runner.prebaked_snapshot == snapshot_name()
+    assert client.snapshot.requested == [snapshot_name()]
+    assert client.snapshots_requested == [snapshot_name()]
+    # the model files are present, but they came from the image, not an upload
+    assert {p.name for p in sandbox.root.iterdir()} == {dst for _src, dst in MODEL_FILES}
+    assert sandbox.fs.uploads == []
+    assert runner.timings["upload_s"] < 0.05
+
+
+def test_a_missing_snapshot_falls_back_to_uploading(tmp_path):
+    """Absence is normal, not an error - and never a reason to run stale code."""
+    runner = DaytonaSimulationRunner(api_key="k")
+    client = FakeClient(tmp_path)
+
+    class NoSnapshots:
+        def get(self, name):
+            raise RuntimeError("404 snapshot not found")
+
+    client.snapshot = NoSnapshots()
+    runner._client = client
+
+    sandbox = runner.prepare()
+    assert runner.prebaked_snapshot is None
+    assert {p.name for p in sandbox.root.iterdir()} == {dst for _src, dst in MODEL_FILES}
+
+
+def test_a_prebaked_snapshot_declares_forking_unavailable(tmp_path):
+    """It is container class, so a fork attempt per scenario would be wasted."""
+    runner = DaytonaSimulationRunner(api_key="k")
+    client = FakeClient(tmp_path)
+    client.snapshot = type("S", (), {"get": lambda self, name: {"name": name}})()
+    runner._client = client
+
+    runner.prepare()
+    assert runner.isolation_mode == ISOLATION_INDEPENDENT
+    assert "container class" in runner.fork_unavailable_reason
+
+
+def test_resolve_provisions_nothing(tmp_path):
+    runner = DaytonaSimulationRunner(api_key="k")
+    client = FakeClient(tmp_path)
+    client.snapshot = type("S", (), {"get": lambda self, name: {"name": name}})()
+    runner._client = client
+
+    runner.resolve()
+    assert runner.baseline_sandbox is None
+    assert client.created == []
+    assert runner.isolation_mode == ISOLATION_INDEPENDENT
+
+
+def test_resolve_is_idempotent(tmp_path):
+    runner = DaytonaSimulationRunner(api_key="k")
+    client = FakeClient(tmp_path)
+    calls: list[str] = []
+    client.snapshot = type(
+        "S", (), {"get": lambda self, name: (calls.append(name), {"name": name})[1]}
+    )()
+    runner._client = client
+    runner.resolve()
+    runner.resolve()
+    assert len(calls) == 1
+
+
+def test_without_forking_the_whole_batch_runs_in_parallel(tmp_path):
+    """Baseline and scenarios each get their own sandbox, created together."""
+    runner = DaytonaSimulationRunner(api_key="k")
+    client = FakeClient(tmp_path, can_fork=False)
+    client.snapshot = type("S", (), {"get": lambda self, name: {"name": name}})()
+    runner._client = client
+
+    out = fork_and_run_scenarios(
+        apply_overrides(FAST, None), prepared_scenarios(),
+        n_runs=N, base_seed=SEED, with_representative_run=False, runner=runner,
+    )
+    assert out["isolation_mode"] == ISOLATION_INDEPENDENT
+    assert out["prebaked_snapshot"]
+    assert "batch_exec_s" in out["timings"]
+    # one sandbox per run, baseline included, and no baseline created up front
+    assert len(runner._sandboxes) == 3
+    ids = {out["baseline_sandbox_id"]} | {r["sandbox_id"] for r in out["scenarios"].values()}
+    assert len(ids) == 3
+    assert out["baseline"]["seeds"] == out["scenarios"]["extra_tank"]["seeds"]
+
+
+def test_a_baseline_failure_is_never_tolerated(tmp_path):
+    """Without a baseline there is nothing to compare against."""
+    runner = DaytonaSimulationRunner(api_key="k")
+    client = FakeClient(tmp_path, can_fork=False)
+    client.snapshot = type("S", (), {"get": lambda self, name: {"name": name}})()
+    runner._client = client
+
+    original = runner.run
+
+    def fail_baseline(sandbox, payload):
+        if payload.get("name") == "baseline":
+            raise RuntimeError("baseline sandbox died")
+        return original(sandbox, payload)
+
+    runner.run = fail_baseline
+    with pytest.raises(RuntimeError, match="baseline sandbox died"):
+        fork_and_run_scenarios(
+            apply_overrides(FAST, None), prepared_scenarios(),
+            n_runs=N, base_seed=SEED, with_representative_run=False,
+            runner=runner, tolerate_failures=True,
+        )

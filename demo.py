@@ -133,7 +133,10 @@ def print_execution(comparison: dict) -> None:
     print(f"  mode              {execution.get('mode')}")
     if execution.get("mode") == "daytona":
         print(f"  isolation         {execution.get('isolation_mode')}")
-        if execution.get("sandbox_snapshot"):
+        if execution.get("prebaked_snapshot"):
+            print(f"  snapshot          {execution['prebaked_snapshot']} "
+                  "(model pre-baked, nothing uploaded)")
+        elif execution.get("sandbox_snapshot"):
             print(f"  snapshot          {execution['sandbox_snapshot']} (forkable VM class)")
         if execution.get("fork_unavailable_reason"):
             print(f"  no native fork    {execution['fork_unavailable_reason']}")
