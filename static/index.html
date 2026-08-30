@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta
+      name="description"
+      content="Turn an operational description into a transparent, executable model."
+    >
+    <title>SimForge — AI Modelling Workspace</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <a class="skip-link" href="#workspace">Skip to workspace</a>
+
+    <div class="app-shell">
+      <header class="topbar">
+        <a class="brand" href="#" aria-label="SimForge home">
+          <span class="brand-mark" aria-hidden="true">
+            <span></span><span></span><span></span>
+          </span>
+          <span class="brand-word">SIMFORGE</span>
+        </a>
+
+        <div class="topbar-context" aria-label="Current workspace">
+          <span class="context-label">Workspace</span>
+          <span>CO₂ storage resilience</span>
+        </div>
+
+        <div class="connection-status" id="connection-status">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span id="connection-label">Fixture mode</span>
+        </div>
+      </header>
+
+      <main id="workspace" class="workspace">
+        <section class="modelling-column" aria-labelledby="page-title">
+          <div class="intro-block">
+            <p class="eyebrow">AI modelling workspace <span>01</span></p>
+            <h1 id="page-title">Describe the operation.<br>Expose every assumption.</h1>
+            <p class="intro-copy">
+              SimForge turns operational context into a structured model before
+              any simulation runs. You stay in control of every inferred value.
+            </p>
+          </div>
+
+          <ol class="stepper" aria-label="Model creation progress">
+            <li class="step is-active" data-step="describe">
+              <span class="step-index">01</span>
+              <span class="step-label">Describe</span>
+            </li>
+            <li class="step" data-step="clarify">
+              <span class="step-index">02</span>
+              <span class="step-label">Clarify</span>
+            </li>
+            <li class="step" data-step="review">
+              <span class="step-index">03</span>
+              <span class="step-label">Review</span>
+            </li>
+          </ol>
+
+          <section class="mode-panel" aria-labelledby="mode-heading">
+            <div>
+              <p class="section-kicker" id="mode-heading">Data source</p>
+              <p class="mode-explainer" id="mode-explainer">
+                Contract fixtures — clearly marked and never presented as live output.
+              </p>
+            </div>
+            <div class="segmented-control" role="group" aria-label="API mode">
+              <button class="mode-button is-selected" type="button" data-mode="mock">
+                Demo data
+              </button>
+              <button class="mode-button" type="button" data-mode="live">
+                Live API
+              </button>
+            </div>
+          </section>
+
+          <section class="input-panel" aria-labelledby="operation-heading">
+            <div class="panel-heading-row">
+              <div>
+                <p class="section-kicker">Operation brief</p>
+                <h2 id="operation-heading">What happens on site?</h2>
+              </div>
+              <span class="input-status">Natural language</span>
+            </div>
+
+            <form id="operation-form" novalidate>
+              <label class="sr-only" for="operation-description">
+                Describe your physical operation
+              </label>
+              <textarea
+                id="operation-description"
+                name="description"
+                rows="8"
+                maxlength="3000"
+                placeholder="We produce around one tonne of CO₂ per hour. We have two 45-tonne storage tanks and normally one tanker collection per day..."
+                aria-describedby="description-help description-error"
+              ></textarea>
+              <div class="textarea-meta">
+                <button class="text-button" id="use-example" type="button">
+                  Use CO₂ example
+                </button>
+                <span id="character-count">0 / 3000</span>
+              </div>
+              <p class="field-help" id="description-help">
+                Include rates, capacities, schedules and the decision you want to test.
+              </p>
+              <p class="field-error" id="description-error" role="alert"></p>
+
+              <div class="form-actions">
+                <button class="primary-button" id="build-model" type="submit">
+                  <span>Build model</span>
+                  <span class="button-arrow" aria-hidden="true">↗</span>
+                </button>
+                <button class="secondary-button" id="reset-workspace" type="button">
+                  Reset
+                </button>
+              </div>
+            </form>
+          </section>
+
+          <section
+            class="agent-panel"
+            id="agent-panel"
+            aria-labelledby="agent-heading"
+            aria-live="polite"
+          >
+            <div class="agent-header">
+              <div class="agent-identity">
+                <span class="agent-symbol" aria-hidden="true">SF</span>
+                <div>
+                  <p class="section-kicker">Requirements agent</p>
+                  <h2 id="agent-heading">Ready for your operation</h2>
+                </div>
+              </div>
+              <span class="agent-state" id="agent-state">Idle</span>
+            </div>
+            <div id="agent-content" class="agent-content"></div>
+          </section>
+        </section>
+
+        <aside class="review-column" aria-labelledby="review-heading">
+          <div class="review-topline">
+            <div>
+              <p class="section-kicker">Executable model</p>
+              <h2 id="review-heading">Model review</h2>
+            </div>
+            <span class="review-state" id="review-state">Waiting for input</span>
+          </div>
+
+          <div class="review-empty" id="review-empty">
+            <div class="empty-diagram" aria-hidden="true">
+              <span class="diagram-node">INPUT</span>
+              <span class="diagram-line"></span>
+              <span class="diagram-node diagram-node-accent">MODEL</span>
+              <span class="diagram-line"></span>
+              <span class="diagram-node">SIM</span>
+            </div>
+            <p class="empty-title">Your ModelSpec will appear here</p>
+            <p>
+              Describe the operation, answer any targeted questions, then review
+              every user value and assumption before handoff.
+            </p>
+            <ul class="empty-checklist">
+              <li><span></span>Structured parameters</li>
+              <li><span></span>Visible provenance</li>
+              <li><span></span>Editable assumptions</li>
+            </ul>
+          </div>
+
+          <div class="review-content" id="review-content" hidden>
+            <section class="objective-card" aria-labelledby="objective-heading">
+              <p class="section-kicker" id="objective-heading">Objective</p>
+              <p class="objective-text" id="objective-text">—</p>
+              <span class="family-label" id="family-label"></span>
+            </section>
+
+            <section class="review-section" aria-labelledby="time-heading">
+              <div class="review-section-heading">
+                <div>
+                  <p class="section-index">01</p>
+                  <h3 id="time-heading">Time horizon</h3>
+                </div>
+                <span class="section-count" id="time-count">2 values</span>
+              </div>
+              <div class="time-grid" id="time-grid"></div>
+            </section>
+
+            <section class="review-section" aria-labelledby="parameters-heading">
+              <div class="review-section-heading">
+                <div>
+                  <p class="section-index">02</p>
+                  <h3 id="parameters-heading">Parameters</h3>
+                </div>
+                <span class="section-count" id="parameter-count">0 values</span>
+              </div>
+              <div class="parameter-list" id="parameter-list"></div>
+            </section>
+
+            <section class="review-section assumptions-section" aria-labelledby="assumptions-heading">
+              <div class="review-section-heading">
+                <div>
+                  <p class="section-index">03</p>
+                  <h3 id="assumptions-heading">Assumptions to review</h3>
+                </div>
+                <span class="section-count assumption-count" id="assumption-count">
+                  0 open
+                </span>
+              </div>
+              <div class="assumption-list" id="assumption-list"></div>
+            </section>
+
+            <details class="json-disclosure">
+              <summary>View ModelSpec JSON <span aria-hidden="true">+</span></summary>
+              <div class="json-toolbar">
+                <span>Validated contract</span>
+                <button class="text-button" id="copy-json" type="button">Copy JSON</button>
+              </div>
+              <pre id="json-preview"></pre>
+            </details>
+
+            <div class="review-actions">
+              <p id="approval-note">
+                Review highlighted assumptions before simulator handoff.
+              </p>
+              <button class="primary-button approve-button" id="approve-model" type="button">
+                <span>Approve ModelSpec</span>
+                <span class="button-arrow" aria-hidden="true">→</span>
+              </button>
+            </div>
+          </div>
+        </aside>
+      </main>
+
+      <footer class="footer">
+        <span>SIMFORGE / AI MODELLING</span>
+        <span>The simulator owns the numbers.</span>
+      </footer>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

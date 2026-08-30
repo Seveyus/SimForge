@@ -355,18 +355,31 @@ Exit gate:
 
 ### M4 — Frontend shell and modelling flow
 
+Status: implemented locally against the M0 requirements fixtures and the shared
+requirements contract. Live mode targets `/api/requirements` without exposing a
+Gemini key or falling back to demo data; the teammate-owned API layer still needs
+to mount that route during integration.
+
+Artifacts:
+
+- `static/index.html`
+- `static/styles.css`
+- `static/app.js`
+
 Deliverables:
 
-- Operation description form.
-- Clarification question flow.
-- Loading, empty, error and retry states.
-- Assumption/provenance review before execution.
-- Responsive and keyboard-usable layout.
+- [x] Operation description form.
+- [x] Clarification question flow.
+- [x] Loading, empty, error and retry states.
+- [x] Assumption/provenance review before execution.
+- [x] Responsive and keyboard-usable layout.
 
 Exit gate:
 
-- A user can move from description to reviewed spec using mock or live contract
-  responses, with no simulator dependency.
+- [x] The fixture-backed flow moves from description through clarification to a
+  reviewed spec, while the same renderer accepts live contract responses.
+- [x] The UI has no simulator implementation dependency; approval emits a
+  contract-shaped `simforge:model-ready` event for the integration layer.
 
 ### M5 — Baseline dashboard
 
