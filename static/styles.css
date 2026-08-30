@@ -30,7 +30,6 @@
 }
 
 html {
-  min-width: 320px;
   scroll-behavior: smooth;
 }
 
@@ -762,6 +761,10 @@ textarea:focus {
   text-align: center;
 }
 
+.review-empty[hidden] {
+  display: none;
+}
+
 .empty-diagram {
   display: flex;
   align-items: center;
@@ -834,6 +837,10 @@ textarea:focus {
   display: grid;
   gap: 14px;
   padding-top: 22px;
+}
+
+.review-content > * {
+  min-width: 0;
 }
 
 .review-content[hidden] {
@@ -1000,6 +1007,7 @@ textarea:focus {
 }
 
 .assumption-card {
+  min-width: 0;
   padding: 13px 14px;
   border: 1px solid rgba(244, 186, 98, 0.16);
   border-radius: var(--radius-sm);
@@ -1018,6 +1026,7 @@ textarea:focus {
   color: var(--amber);
   font-family: var(--mono);
   font-size: 0.65rem;
+  overflow-wrap: anywhere;
 }
 
 .assumption-value {
@@ -1680,6 +1689,10 @@ pre {
   display: grid;
   gap: 48px;
   padding-top: 36px;
+}
+
+.comparison-content > section {
+  min-width: 0;
 }
 
 .recommendation-panel {
